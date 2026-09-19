@@ -27,7 +27,7 @@ jobs:
       major: ${{ steps.v.outputs.major }}
       skip: ${{ steps.v.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - id: v
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -63,7 +63,7 @@ jobs:
             target: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -94,7 +94,7 @@ jobs:
           Copy-Item "target\${{ matrix.target }}\release\kmrs.exe" $stage
           Copy-Item LICENSE, README.md $stage
           Compress-Archive -Path $stage -DestinationPath "dist\${stage}.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: dist/*
@@ -104,8 +104,8 @@ jobs:
     if: needs.version.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: "*-unknown-linux-gnu"
           path: artifacts
@@ -115,13 +115,13 @@ jobs:
           tar -xzf artifacts/x86_64-unknown-linux-gnu/*.tar.gz -C dist/amd64 --strip-components=1 '*/kmrs'
           tar -xzf artifacts/aarch64-unknown-linux-gnu/*.tar.gz -C dist/arm64 --strip-components=1 '*/kmrs'
           ls -l dist/amd64 dist/arm64
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@v6
         id: meta
         with:
           images: ghcr.io/${{ github.repository }}
@@ -129,7 +129,7 @@ jobs:
             type=raw,value=latest
             type=raw,value=${{ needs.version.outputs.version }}
             type=raw,value=${{ needs.version.outputs.major }}.x
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -144,8 +144,8 @@ jobs:
     if: needs.version.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
           path: artifacts
