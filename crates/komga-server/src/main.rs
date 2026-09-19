@@ -16,8 +16,8 @@ mod zip_archive;
 
 use anyhow::Context;
 use clap::Parser;
-use komga_db::Migrator;
 use komga_db::pool::Database;
+use komga_db::Migrator;
 use state::AppState;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;

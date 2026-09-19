@@ -8,8 +8,8 @@
 
 use anyhow::Context;
 use clap::Parser;
-use komga_db::Placeholders;
 use komga_db::pool::{DatabaseConfig, JournalMode};
+use komga_db::Placeholders;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -504,20 +504,29 @@ impl ServerConfig {
             database,
             tasks_db,
             session_timeout,
-            cors_allowed_origins: env_list(env, "KOMGA_CORS_ALLOWEDORIGINS").or_else(|| {
-                komga
-                    .and_then(|k| k.cors.as_ref())
-                    .and_then(|c| c.allowed_origins.clone())
-            }).unwrap_or_default(),
+            cors_allowed_origins: env_list(env, "KOMGA_CORS_ALLOWEDORIGINS")
+                .or_else(|| {
+                    komga
+                        .and_then(|k| k.cors.as_ref())
+                        .and_then(|c| c.allowed_origins.clone())
+                })
+                .unwrap_or_default(),
             page_hashing: env_u32(env, "KOMGA_PAGEHASHING")
                 .or_else(|| komga.and_then(|k| k.page_hashing))
                 .unwrap_or(3),
-            epub_divina_letter_count_threshold: env_u32(env, "KOMGA_EPUBDIVINALETTERCOUNTTHRESHOLD")
-                .map(|v| v as usize)
-                .or_else(|| komga.and_then(|k| k.epub_divina_letter_count_threshold))
-                .unwrap_or(15),
+            epub_divina_letter_count_threshold: env_u32(
+                env,
+                "KOMGA_EPUBDIVINALETTERCOUNTTHRESHOLD",
+            )
+            .map(|v| v as usize)
+            .or_else(|| komga.and_then(|k| k.epub_divina_letter_count_threshold))
+            .unwrap_or(15),
             kobo_sync_item_limit: env_u32(env, "KOMGA_KOBO_SYNCITEMLIMIT")
-                .or_else(|| komga.and_then(|k| k.kobo.as_ref()).and_then(|k| k.sync_item_limit))
+                .or_else(|| {
+                    komga
+                        .and_then(|k| k.kobo.as_ref())
+                        .and_then(|k| k.sync_item_limit)
+                })
                 .unwrap_or(100),
             kepubify_path: env_path(env, "KOMGA_KOBO_KEPUBIFY_PATH").or_else(|| {
                 komga
@@ -560,7 +569,9 @@ fn merge_database(
         .unwrap_or_default();
     if let Some(d) = file {
         if d.batch_chunk_size.is_some() {
-            warnings.push(format!("{toml_path}.batch-chunk-size: not supported by kmrs"));
+            warnings.push(format!(
+                "{toml_path}.batch-chunk-size: not supported by kmrs"
+            ));
         }
         if d.check_local_filesystem.is_some() {
             warnings.push(format!(
@@ -606,11 +617,7 @@ fn parse_journal_mode(mode: &str) -> anyhow::Result<JournalMode> {
 
 /// File registrations come first, env vars override individual fields on top
 /// (same-id entries merge, matching Spring's property-source precedence).
-fn merge_oauth2(
-    spring: Option<&FileSpring>,
-    komga: Option<&FileKomga>,
-    env: &Env,
-) -> OAuth2Config {
+fn merge_oauth2(spring: Option<&FileSpring>, komga: Option<&FileKomga>, env: &Env) -> OAuth2Config {
     const REG_PREFIX: &str = "SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_";
     const PROV_PREFIX: &str = "SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_";
 
@@ -795,7 +802,10 @@ mod tests {
         assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
         assert_eq!(parse_duration("30m").unwrap(), Duration::from_secs(1800));
         assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
-        assert_eq!(parse_duration("7d").unwrap(), Duration::from_secs(7 * 86400));
+        assert_eq!(
+            parse_duration("7d").unwrap(),
+            Duration::from_secs(7 * 86400)
+        );
         assert!(parse_duration("7").is_err());
         assert!(parse_duration("abc").is_err());
     }
@@ -840,14 +850,20 @@ kepubify-path = "/usr/local/bin/kepubify"
             &[],
         );
         assert_eq!(config.config_dir, PathBuf::from("/data/komga"));
-        assert_eq!(config.database_file, PathBuf::from("/data/komga/database.sqlite"));
+        assert_eq!(
+            config.database_file,
+            PathBuf::from("/data/komga/database.sqlite")
+        );
         assert_eq!(config.lucene_dir, PathBuf::from("/data/komga/lucene"));
         assert_eq!(config.fonts_dir, PathBuf::from("/data/komga/fonts"));
         assert_eq!(config.page_hashing, 5);
         assert!(!config.migration_placeholders.delete_empty_collections);
         assert_eq!(
             config.cors_allowed_origins,
-            vec!["https://a.example".to_string(), "https://b.example".to_string()]
+            vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string()
+            ]
         );
         assert_eq!(config.kobo_sync_item_limit, 50);
         assert_eq!(
@@ -869,7 +885,11 @@ kepubify-path = "/usr/local/bin/kepubify"
             &env(&[("SERVER_PORT", "7000")]),
         );
         assert_eq!(config.port, 9000);
-        let config = resolve("[server]\nport = 8000\n", Cli::default(), &env(&[("SERVER_PORT", "7000")]));
+        let config = resolve(
+            "[server]\nport = 8000\n",
+            Cli::default(),
+            &env(&[("SERVER_PORT", "7000")]),
+        );
         assert_eq!(config.port, 7000);
         let config = resolve("[server]\nport = 8000\n", Cli::default(), &[]);
         assert_eq!(config.port, 8000);
@@ -922,10 +942,22 @@ issuer-uri = "https://github.com"
 "#,
             Cli::default(),
             &env(&[
-                ("SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GITHUB_CLIENT-SECRET", "env-secret"),
-                ("SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_GITHUB_TOKEN-URI", "https://github.com/token"),
-                ("SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_OKTA_CLIENT-ID", "okta-id"),
-                ("SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_OKTA_ISSUER-URI", "https://okta.example"),
+                (
+                    "SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GITHUB_CLIENT-SECRET",
+                    "env-secret",
+                ),
+                (
+                    "SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_GITHUB_TOKEN-URI",
+                    "https://github.com/token",
+                ),
+                (
+                    "SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_OKTA_CLIENT-ID",
+                    "okta-id",
+                ),
+                (
+                    "SPRING_SECURITY_OAUTH2_CLIENT_PROVIDER_OKTA_ISSUER-URI",
+                    "https://okta.example",
+                ),
             ]),
         );
         assert!(config.oauth2.account_creation);
@@ -937,13 +969,20 @@ issuer-uri = "https://github.com"
         assert_eq!(github.client_name_or_id(), "GitHub");
         assert_eq!(github.scopes, vec!["read:user".to_string()]);
         assert_eq!(github.issuer_uri.as_deref(), Some("https://github.com"));
-        assert_eq!(github.token_uri.as_deref(), Some("https://github.com/token"));
+        assert_eq!(
+            github.token_uri.as_deref(),
+            Some("https://github.com/token")
+        );
         let okta = &config.oauth2.registrations[1];
         assert_eq!(okta.registration_id, "okta");
         assert!(okta.is_oidc());
         assert_eq!(
             okta.effective_scopes(),
-            vec!["openid".to_string(), "profile".to_string(), "email".to_string()]
+            vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string()
+            ]
         );
     }
 
