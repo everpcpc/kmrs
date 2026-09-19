@@ -6,6 +6,8 @@ A Rust rewrite of the [Komga](https://komga.org) server. The goal is **full comp
 - Endpoints, DTOs, pagination, error shapes, and authentication behavior for REST `/api/**`, OPDS v1.2/v2, SSE, Kobo, and KOReader match the Java version
 - No UI
 
+The compatibility target is **komga 1.27.0**: the Flyway migrations, the OpenAPI document, and the behavior fixtures are taken from that release, and API behavior is ported from it.
+
 ## Structure
 
 - `crates/komga-core`: domain model, TSID, time encoding/decoding, natural-sort comparator, error codes
@@ -25,7 +27,7 @@ cargo xtask dump-schema         # print the final migrated schema
 cargo xtask dump-checksums      # print Flyway CRC32 for all migrations
 ```
 
-`sync-migrations` looks for a `komga` source checkout next to this repo by default; `KOMGA_REPO_DIR` can be used to point elsewhere.
+`sync-migrations` looks for a `komga` source checkout next to this repo by default; `KOMGA_REPO_DIR` can be used to point elsewhere. The checkout should be at the compatibility target (`v1.27.0`).
 
 Run: `cargo run -p komga-server` produces the `kmrs` binary (default port 25600, data directory `~/.komga`, overridable with `KOMGA_CONFIG_DIR`).
 
