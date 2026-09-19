@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
       *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac; \
     curl -fsSL "https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-$arch.tgz" \
-      | tar -xz -C /tmp --strip-components=2 lib/libpdfium.so \
+      | tar -xz -C /tmp --strip-components=1 lib/libpdfium.so \
+ && test -s /tmp/libpdfium.so \
  && install -d -m 777 /staging/config /staging/data
 
 FROM debian:bookworm-slim
