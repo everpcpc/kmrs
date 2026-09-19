@@ -24,6 +24,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p komga-server
+        env:
+          # see release.yml: vendor liblzma, runner images differ on liblzma-dev
+          LZMA_API_STATIC: "1"
       - run: mkdir -p dist/amd64 && cp target/debug/kmrs dist/amd64/
       - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7

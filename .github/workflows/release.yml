@@ -78,6 +78,10 @@ jobs:
       - run: cargo build --release --target ${{ matrix.target }} -p komga-server
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          # vendor liblzma instead of linking the system one: runner images
+          # differ in whether liblzma-dev is present, and the rust-cache
+          # key (runner.os = Linux) does not distinguish them
+          LZMA_API_STATIC: "1"
       - name: Package (unix)
         if: runner.os != 'Windows'
         shell: bash
