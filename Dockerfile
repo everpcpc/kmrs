@@ -8,7 +8,7 @@
 # Runs on the build platform, so no emulation is ever needed: downloads
 # libpdfium (a lazy runtime dependency for PDF support; kmrs looks it up next
 # to the executable) and prepares the mount points for the target stage.
-FROM --platform=$BUILDPLATFORM debian:bookworm-slim AS base
+FROM --platform=$BUILDPLATFORM debian:trixie-slim AS base
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
  && test -s /tmp/libpdfium.so \
  && install -d -m 777 /staging/config /staging/data
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 ARG TARGETARCH
 LABEL org.opencontainers.image.source="https://github.com/everpcpc/kmrs" \
       org.opencontainers.image.description="Rust rewrite of the Komga server (API only, no UI)" \

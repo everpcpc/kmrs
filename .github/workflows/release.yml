@@ -50,11 +50,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # linux legs build on the oldest glibc we ship against: the docker
-          # runtime is debian:bookworm-slim (glibc 2.36)
-          - os: ubuntu-22.04
+          # linux legs build on an older glibc than the docker runtime ships:
+          # debian:trixie-slim has 2.41, ubuntu-24.04 builds against 2.39
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
             target: aarch64-unknown-linux-gnu
             cross: true
           - os: macos-14
