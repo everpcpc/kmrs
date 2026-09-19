@@ -19,7 +19,7 @@ session-timeout = "7d" # env: SERVER_SERVLET_SESSION_TIMEOUT; "500ms"/"10s"/"30m
 allowed-origins = [] # env: KOMGA_CORS_ALLOWEDORIGINS (comma-separated)
 
 [database]
-file = "<config-dir>/database.sqlite" # env: KOMGA_DATABASE_FILE
+# file = "/custom/path/database.sqlite" # default: <config-dir>/database.sqlite; env: KOMGA_DATABASE_FILE
 # pool-size = 4 # read pool size; default min(CPU cores, max-pool-size). env: KOMGA_DATABASE_POOLSIZE
 max-pool-size = 1 # env: KOMGA_DATABASE_MAXPOOLSIZE
 journal-mode = "WAL" # WAL/DELETE/TRUNCATE/PERSIST/MEMORY/OFF; env: KOMGA_DATABASE_JOURNALMODE
@@ -28,13 +28,13 @@ journal-mode = "WAL" # WAL/DELETE/TRUNCATE/PERSIST/MEMORY/OFF; env: KOMGA_DATABA
 # synchronous = "NORMAL"
 
 [tasks-db]
-file = "<config-dir>/tasks.sqlite" # env: KOMGA_TASKSDB_FILE; same keys as [database], env prefix KOMGA_TASKSDB
+# file = "/custom/path/tasks.sqlite" # default: <config-dir>/tasks.sqlite; env: KOMGA_TASKSDB_FILE; same keys as [database], env prefix KOMGA_TASKSDB
 
 [search]
-data-directory = "<config-dir>/lucene" # tantivy index; env: KOMGA_LUCENE_DATA_DIRECTORY
+# data-directory = "/custom/path/lucene" # default: <config-dir>/lucene (tantivy index); env: KOMGA_LUCENE_DATA_DIRECTORY
 
 [fonts]
-data-directory = "<config-dir>/fonts" # env: KOMGA_FONTS_DATA_DIRECTORY
+# data-directory = "/custom/path/fonts" # default: <config-dir>/fonts; env: KOMGA_FONTS_DATA_DIRECTORY
 
 [books]
 page-hashing = 3 # env: KOMGA_PAGEHASHING
