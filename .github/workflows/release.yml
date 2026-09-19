@@ -150,6 +150,21 @@ jobs:
             type=raw,value=latest
             type=raw,value=${{ needs.version.outputs.version }}
             type=raw,value=${{ needs.version.outputs.major }}.x
+      - name: Smoke test (amd64)
+        # the shipped artifact gets no other runtime validation; a glibc or
+        # packaging regression must fail here, before anything is pushed
+        run: |
+          docker buildx build --platform linux/amd64 --load -t kmrs:smoke .
+          docker run -d --name kmrs --user 1000:1000 -p 25600:25600 kmrs:smoke
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:25600/actuator/health > /dev/null; then
+              echo "server is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs kmrs
+          exit 1
       - uses: docker/build-push-action@v7
         with:
           context: .
@@ -161,7 +176,9 @@ jobs:
           cache-to: type=gha,mode=max
 
   release:
-    needs: [version, build]
+    # after docker: if the image smoke test fails, no release is created, so
+    # the skip-guard does not block a fixed re-run
+    needs: [version, build, docker]
     if: needs.version.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
