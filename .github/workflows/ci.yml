@@ -26,7 +26,6 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - run: sccache --show-stats
 
   docker:
     # build glibc (2.39) must not exceed the debian:trixie-slim runtime's (2.41)
