@@ -848,7 +848,11 @@ issuer-uri = "https://github.com"
     fn existing_config_toml_wins_over_java_config() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.toml"), "[server]\nport = 9000\n").unwrap();
-        std::fs::write(dir.path().join("application.yml"), "server:\n  port: 8080\n").unwrap();
+        std::fs::write(
+            dir.path().join("application.yml"),
+            "server:\n  port: 8080\n",
+        )
+        .unwrap();
         let cli = Cli {
             config_dir: Some(dir.path().to_path_buf()),
             port: None,

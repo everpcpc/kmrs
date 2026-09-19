@@ -250,7 +250,9 @@ pub fn render(config: &ServerConfig, source: Option<&Path>) -> String {
     ));
 
     out.push_str("[libraries]\n");
-    out.push_str("# only consulted when database migrations run (fresh or upgraded data directory)\n");
+    out.push_str(
+        "# only consulted when database migrations run (fresh or upgraded data directory)\n",
+    );
     out.push_str(&format!(
         "file-hashing = {} # env: KOMGA_FILEHASHING\n",
         config.migration_placeholders.library_file_hashing

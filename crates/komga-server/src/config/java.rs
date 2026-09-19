@@ -22,7 +22,10 @@ pub fn migrate(config_dir: &Path) -> Option<(FileConfig, PathBuf)> {
         match serde_yaml::from_str::<JavaConfig>(&text) {
             Ok(java) => return Some((java.into_file_config(config_dir), path)),
             Err(e) => {
-                tracing::warn!("{}: {e:#}; starting with default configuration", path.display());
+                tracing::warn!(
+                    "{}: {e:#}; starting with default configuration",
+                    path.display()
+                );
                 return None;
             }
         }
@@ -198,7 +201,10 @@ impl JavaConfig {
         if let Some(komga) = self.komga {
             // ${komga.config-dir} placeholders in the Java paths refer to the Java data
             // directory, which may differ from the one kmrs is pointed at
-            let subst_base = komga.config_dir.clone().unwrap_or_else(|| config_dir.to_path_buf());
+            let subst_base = komga
+                .config_dir
+                .clone()
+                .unwrap_or_else(|| config_dir.to_path_buf());
             let subst_base = subst_user_home(&subst_base.to_string_lossy());
             if let Some(d) = &komga.config_dir {
                 if subst_base != config_dir {
@@ -305,7 +311,9 @@ impl JavaConfig {
                 }
             }
         }
-        if account_creation.is_some() || oidc_email_verification.is_some() || !registrations.is_empty()
+        if account_creation.is_some()
+            || oidc_email_verification.is_some()
+            || !registrations.is_empty()
         {
             file.oauth2 = Some(FileOAuth2 {
                 account_creation,
@@ -321,7 +329,9 @@ impl JavaConfig {
 impl JavaDatabase {
     fn into_file(self, subst_base: &Path, toml_path: &str) -> FileDatabase {
         if self.batch_chunk_size.is_some() {
-            tracing::warn!("{toml_path}.batch-chunk-size: not supported by kmrs, ignored during migration");
+            tracing::warn!(
+                "{toml_path}.batch-chunk-size: not supported by kmrs, ignored during migration"
+            );
         }
         if self.check_local_filesystem.is_some() {
             tracing::warn!("{toml_path}.check-local-filesystem: not supported by kmrs, ignored during migration");
@@ -432,7 +442,10 @@ logging:
         let server = file.server.unwrap();
         assert_eq!(server.port, Some(8080));
         assert_eq!(server.context_path.as_deref(), Some("/komga"));
-        assert_eq!(server.session_timeout.unwrap().0, std::time::Duration::from_secs(12 * 3600));
+        assert_eq!(
+            server.session_timeout.unwrap().0,
+            std::time::Duration::from_secs(12 * 3600)
+        );
         let books = file.books.unwrap();
         assert_eq!(books.page_hashing, Some(5));
         assert_eq!(books.epub_divina_letter_count_threshold, Some(20));
@@ -554,13 +567,21 @@ komga:
         let dir = tempfile::tempdir().unwrap();
         assert!(migrate(dir.path()).is_none());
 
-        std::fs::write(dir.path().join("application.yaml"), "server:\n  port: 8081\n").unwrap();
+        std::fs::write(
+            dir.path().join("application.yaml"),
+            "server:\n  port: 8081\n",
+        )
+        .unwrap();
         let (file, source) = migrate(dir.path()).unwrap();
         assert!(source.ends_with("application.yaml"));
         assert_eq!(file.server.unwrap().port, Some(8081));
         std::fs::remove_file(dir.path().join("application.yaml")).unwrap();
 
-        std::fs::write(dir.path().join("application.yml"), "komga:\n  page-hashing: 9\n").unwrap();
+        std::fs::write(
+            dir.path().join("application.yml"),
+            "komga:\n  page-hashing: 9\n",
+        )
+        .unwrap();
         let (file, source) = migrate(dir.path()).unwrap();
         assert!(source.ends_with("application.yml"));
         assert_eq!(file.books.unwrap().page_hashing, Some(9));
