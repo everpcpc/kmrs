@@ -1,0 +1,31 @@
+name: Cross dry-run
+
+# TEMPORARY: exercises the release.yml cross legs on this branch before
+# merge, since release.yml itself only runs on master. Deleted before merge.
+on:
+  push:
+    branches: [feat/docker-ghcr]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: "false"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - run: cross build --release --target ${{ matrix.target }} -p komga-server
+        env:
+          LZMA_API_STATIC: "1"
