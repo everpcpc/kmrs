@@ -169,9 +169,9 @@ impl ServerConfig {
                 port: None,
             };
             let rendered = Self::resolve(Some(&file), &render_cli, &[])?;
-            match std::fs::create_dir_all(&config_dir)
-                .and_then(|()| std::fs::write(&path, file::render(&rendered, source.as_deref())))
-            {
+            match std::fs::create_dir_all(&config_dir).and_then(|()| {
+                std::fs::write(&path, file::render(&file, &rendered, source.as_deref()))
+            }) {
                 Ok(()) => match &source {
                     Some(p) => tracing::info!(
                         "wrote configuration to {}, migrated from {}",
@@ -781,7 +781,7 @@ issuer-uri = "https://github.com"
         )
         .unwrap();
         let config = ServerConfig::resolve(Some(&file), &cli, &[]).unwrap();
-        let rendered = file::render(&config, None);
+        let rendered = file::render(&file, &config, None);
         let reparsed: FileConfig = toml::from_str(&rendered).unwrap();
         let config2 = ServerConfig::resolve(Some(&reparsed), &cli, &[]).unwrap();
         assert_eq!(config2.database.pool_size, Some(4));
@@ -817,6 +817,8 @@ issuer-uri = "https://github.com"
         assert_eq!(config.port, 25600);
         let written = dir.path().join("config.toml");
         let text = std::fs::read_to_string(&written).unwrap();
+        // defaults are commented out; only explicit overrides are written live
+        assert!(text.contains("# port = 25600"));
         let parsed: FileConfig = toml::from_str(&text).unwrap();
         let reparsed = ServerConfig::resolve(Some(&parsed), &cli, &[]).unwrap();
         assert_eq!(reparsed.port, 25600);
@@ -842,6 +844,8 @@ issuer-uri = "https://github.com"
         let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
         assert!(text.contains("port = 8080"));
         assert!(text.contains("page-hashing = 7"));
+        // untouched defaults stay commented
+        assert!(text.contains("# session-timeout = \"7d\""));
     }
 
     #[test]

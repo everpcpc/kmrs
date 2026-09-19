@@ -179,9 +179,10 @@ pub fn format_duration(d: Duration) -> String {
 
 // ---- rendering of the generated config.toml ----
 
-/// Renders the file written on first start: every value is shown explicitly, so the
-/// result reflects the built-in defaults merged with the migrated configuration.
-pub fn render(config: &ServerConfig, source: Option<&Path>) -> String {
+/// Renders the file written on first start. Keys explicitly set in `file` (migrated
+/// values) are written live; everything else is shown commented at its default value,
+/// so the defaults stay owned by the code and the file only pins real overrides.
+pub fn render(file: &FileConfig, config: &ServerConfig, source: Option<&Path>) -> String {
     let mut out = String::new();
     out.push_str("# kmrs configuration file.\n#\n");
     match source {
@@ -192,108 +193,197 @@ pub fn render(config: &ServerConfig, source: Option<&Path>) -> String {
         None => out.push_str("# Generated on first start with built-in defaults.\n"),
     }
     out.push_str(
-        "# Delete a key to fall back to its default; delete the file to regenerate it.\n\
+        "# Keys left at their default are commented out — uncomment to change them.\n\
+         # Delete the file to regenerate it.\n\
          # Precedence (lowest to highest): built-in defaults < this file < env vars < CLI flags.\n\
          # Env vars keep the komga/Spring names (e.g. `database.file` -> KOMGA_DATABASE_FILE),\n\
          # so an existing komga deployment's environment keeps working.\n\n",
     );
 
+    let fserver = file.server.as_ref();
     out.push_str("[server]\n");
-    out.push_str(&format!(
-        "port = {} # env: SERVER_PORT; CLI: --port\n",
-        config.port
-    ));
-    out.push_str(&format!(
-        "session-timeout = {} # env: SERVER_SERVLET_SESSION_TIMEOUT; \"500ms\"/\"10s\"/\"30m\"/\"1h\"/\"7d\", bare integer = seconds\n",
-        q(&format_duration(config.session_timeout))
-    ));
-    match &config.server_context_path {
-        Some(p) => out.push_str(&format!(
-            "context-path = {} # env: SERVER_SERVLET_CONTEXT_PATH; URL prefix, empty = root\n",
-            q(p)
-        )),
-        None => out.push_str(
-            "# context-path = \"/\" # env: SERVER_SERVLET_CONTEXT_PATH; URL prefix, empty = root\n",
+    push_line(
+        &mut out,
+        fserver.and_then(|s| s.port).is_some(),
+        format!("port = {} # env: SERVER_PORT; CLI: --port", config.port),
+    );
+    push_line(
+        &mut out,
+        fserver.and_then(|s| s.session_timeout).is_some(),
+        format!(
+            "session-timeout = {} # env: SERVER_SERVLET_SESSION_TIMEOUT; \"500ms\"/\"10s\"/\"30m\"/\"1h\"/\"7d\", bare integer = seconds",
+            q(&format_duration(config.session_timeout))
         ),
-    }
+    );
+    push_line(
+        &mut out,
+        fserver.and_then(|s| s.context_path.as_ref()).is_some(),
+        format!(
+            "context-path = {} # env: SERVER_SERVLET_CONTEXT_PATH; URL prefix, empty = root",
+            q(config.server_context_path.as_deref().unwrap_or("/"))
+        ),
+    );
     out.push('\n');
 
     out.push_str("[cors]\n");
-    out.push_str(&format!(
-        "allowed-origins = {} # env: KOMGA_CORS_ALLOWEDORIGINS (comma-separated)\n\n",
-        str_list(&config.cors_allowed_origins)
-    ));
+    push_line(
+        &mut out,
+        file.cors
+            .as_ref()
+            .and_then(|c| c.allowed_origins.as_ref())
+            .is_some(),
+        format!(
+            "allowed-origins = {} # env: KOMGA_CORS_ALLOWEDORIGINS (comma-separated)",
+            str_list(&config.cors_allowed_origins)
+        ),
+    );
+    out.push('\n');
 
-    render_database(&mut out, "database", &config.database, "KOMGA_DATABASE");
-    render_database(&mut out, "tasks-db", &config.tasks_db, "KOMGA_TASKSDB");
+    render_database(
+        &mut out,
+        "database",
+        file.database.as_ref(),
+        &config.database,
+        "KOMGA_DATABASE",
+    );
+    render_database(
+        &mut out,
+        "tasks-db",
+        file.tasks_db.as_ref(),
+        &config.tasks_db,
+        "KOMGA_TASKSDB",
+    );
 
     out.push_str("[search]\n");
-    out.push_str(&format!(
-        "data-directory = {} # tantivy index; env: KOMGA_LUCENE_DATA_DIRECTORY\n\n",
-        q(&config.lucene_dir.display().to_string())
-    ));
+    push_line(
+        &mut out,
+        file.search
+            .as_ref()
+            .and_then(|s| s.data_directory.as_ref())
+            .is_some(),
+        format!(
+            "data-directory = {} # tantivy index; env: KOMGA_LUCENE_DATA_DIRECTORY",
+            q(&config.lucene_dir.display().to_string())
+        ),
+    );
+    out.push('\n');
 
     out.push_str("[fonts]\n");
-    out.push_str(&format!(
-        "data-directory = {} # env: KOMGA_FONTS_DATA_DIRECTORY\n\n",
-        q(&config.fonts_dir.display().to_string())
-    ));
+    push_line(
+        &mut out,
+        file.fonts
+            .as_ref()
+            .and_then(|f| f.data_directory.as_ref())
+            .is_some(),
+        format!(
+            "data-directory = {} # env: KOMGA_FONTS_DATA_DIRECTORY",
+            q(&config.fonts_dir.display().to_string())
+        ),
+    );
+    out.push('\n');
 
+    let fbooks = file.books.as_ref();
     out.push_str("[books]\n");
-    out.push_str(&format!(
-        "page-hashing = {} # env: KOMGA_PAGEHASHING\n",
-        config.page_hashing
-    ));
-    out.push_str(&format!(
-        "epub-divina-letter-count-threshold = {} # env: KOMGA_EPUBDIVINALETTERCOUNTTHRESHOLD\n\n",
-        config.epub_divina_letter_count_threshold
-    ));
+    push_line(
+        &mut out,
+        fbooks.and_then(|b| b.page_hashing).is_some(),
+        format!(
+            "page-hashing = {} # env: KOMGA_PAGEHASHING",
+            config.page_hashing
+        ),
+    );
+    push_line(
+        &mut out,
+        fbooks
+            .and_then(|b| b.epub_divina_letter_count_threshold)
+            .is_some(),
+        format!(
+            "epub-divina-letter-count-threshold = {} # env: KOMGA_EPUBDIVINALETTERCOUNTTHRESHOLD",
+            config.epub_divina_letter_count_threshold
+        ),
+    );
+    out.push('\n');
 
+    let flibraries = file.libraries.as_ref();
     out.push_str("[libraries]\n");
     out.push_str(
         "# only consulted when database migrations run (fresh or upgraded data directory)\n",
     );
-    out.push_str(&format!(
-        "file-hashing = {} # env: KOMGA_FILEHASHING\n",
-        config.migration_placeholders.library_file_hashing
-    ));
-    out.push_str(&format!(
-        "scan-on-startup = {} # env: KOMGA_LIBRARIESSCANSTARTUP\n",
-        config.migration_placeholders.library_scan_startup
-    ));
-    out.push_str(&format!(
-        "delete-empty-collections = {} # env: KOMGA_DELETEEMPTYCOLLECTIONS\n",
-        config.migration_placeholders.delete_empty_collections
-    ));
-    out.push_str(&format!(
-        "delete-empty-read-lists = {} # env: KOMGA_DELETEEMPTYREADLISTS\n\n",
-        config.migration_placeholders.delete_empty_read_lists
-    ));
+    push_line(
+        &mut out,
+        flibraries.and_then(|l| l.file_hashing).is_some(),
+        format!(
+            "file-hashing = {} # env: KOMGA_FILEHASHING",
+            config.migration_placeholders.library_file_hashing
+        ),
+    );
+    push_line(
+        &mut out,
+        flibraries.and_then(|l| l.scan_on_startup).is_some(),
+        format!(
+            "scan-on-startup = {} # env: KOMGA_LIBRARIESSCANSTARTUP",
+            config.migration_placeholders.library_scan_startup
+        ),
+    );
+    push_line(
+        &mut out,
+        flibraries
+            .and_then(|l| l.delete_empty_collections)
+            .is_some(),
+        format!(
+            "delete-empty-collections = {} # env: KOMGA_DELETEEMPTYCOLLECTIONS",
+            config.migration_placeholders.delete_empty_collections
+        ),
+    );
+    push_line(
+        &mut out,
+        flibraries.and_then(|l| l.delete_empty_read_lists).is_some(),
+        format!(
+            "delete-empty-read-lists = {} # env: KOMGA_DELETEEMPTYREADLISTS",
+            config.migration_placeholders.delete_empty_read_lists
+        ),
+    );
+    out.push('\n');
 
+    let fkobo = file.kobo.as_ref();
     out.push_str("[kobo]\n");
-    out.push_str(&format!(
-        "sync-item-limit = {} # env: KOMGA_KOBO_SYNCITEMLIMIT\n",
-        config.kobo_sync_item_limit
-    ));
+    push_line(
+        &mut out,
+        fkobo.and_then(|k| k.sync_item_limit).is_some(),
+        format!(
+            "sync-item-limit = {} # env: KOMGA_KOBO_SYNCITEMLIMIT",
+            config.kobo_sync_item_limit
+        ),
+    );
     match &config.kepubify_path {
         Some(p) => out.push_str(&format!(
-            "kepubify-path = {} # env: KOMGA_KOBO_KEPUBIFY_PATH\n\n",
+            "kepubify-path = {} # env: KOMGA_KOBO_KEPUBIFY_PATH\n",
             q(&p.display().to_string())
         )),
         None => out.push_str(
-            "# kepubify-path = \"/usr/local/bin/kepubify\" # env: KOMGA_KOBO_KEPUBIFY_PATH\n\n",
+            "# kepubify-path = \"/usr/local/bin/kepubify\" # env: KOMGA_KOBO_KEPUBIFY_PATH\n",
         ),
     }
+    out.push('\n');
 
+    let foauth2 = file.oauth2.as_ref();
     out.push_str("[oauth2]\n");
-    out.push_str(&format!(
-        "account-creation = {} # env: KOMGA_OAUTH2ACCOUNTCREATION\n",
-        config.oauth2.account_creation
-    ));
-    out.push_str(&format!(
-        "oidc-email-verification = {} # env: KOMGA_OIDCMAILVERIFICATION\n",
-        config.oauth2.oidc_email_verification
-    ));
+    push_line(
+        &mut out,
+        foauth2.and_then(|o| o.account_creation).is_some(),
+        format!(
+            "account-creation = {} # env: KOMGA_OAUTH2ACCOUNTCREATION",
+            config.oauth2.account_creation
+        ),
+    );
+    push_line(
+        &mut out,
+        foauth2.and_then(|o| o.oidc_email_verification).is_some(),
+        format!(
+            "oidc-email-verification = {} # env: KOMGA_OIDCMAILVERIFICATION",
+            config.oauth2.oidc_email_verification
+        ),
+    );
     out.push_str(
         "# One table per provider; setting `issuer-uri` switches it to OIDC discovery mode.\n\
          # env vars SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_<ID>_*/PROVIDER_<ID>_* override single fields.\n",
@@ -317,12 +407,31 @@ pub fn render(config: &ServerConfig, source: Option<&Path>) -> String {
     out
 }
 
-fn render_database(out: &mut String, section: &str, db: &DatabaseConfig, env_prefix: &str) {
+/// `explicit` lines are written live, others are shown commented at their default value.
+fn push_line(out: &mut String, explicit: bool, text: String) {
+    if !explicit {
+        out.push_str("# ");
+    }
+    out.push_str(&text);
+    out.push('\n');
+}
+
+fn render_database(
+    out: &mut String,
+    section: &str,
+    f: Option<&FileDatabase>,
+    db: &DatabaseConfig,
+    env_prefix: &str,
+) {
     out.push_str(&format!("[{section}]\n"));
-    out.push_str(&format!(
-        "file = {} # env: {env_prefix}_FILE\n",
-        q(&db.file.display().to_string())
-    ));
+    push_line(
+        out,
+        f.and_then(|d| d.file.as_ref()).is_some(),
+        format!(
+            "file = {} # env: {env_prefix}_FILE",
+            q(&db.file.display().to_string())
+        ),
+    );
     match db.pool_size {
         Some(n) => out.push_str(&format!(
             "pool-size = {n} # read pool size; default min(CPU cores, max-pool-size). env: {env_prefix}_POOLSIZE\n"
@@ -331,10 +440,14 @@ fn render_database(out: &mut String, section: &str, db: &DatabaseConfig, env_pre
             "# pool-size = 4 # read pool size; default min(CPU cores, max-pool-size). env: {env_prefix}_POOLSIZE\n"
         )),
     }
-    out.push_str(&format!(
-        "max-pool-size = {} # env: {env_prefix}_MAXPOOLSIZE\n",
-        db.max_pool_size
-    ));
+    push_line(
+        out,
+        f.and_then(|d| d.max_pool_size).is_some(),
+        format!(
+            "max-pool-size = {} # env: {env_prefix}_MAXPOOLSIZE",
+            db.max_pool_size
+        ),
+    );
     let mode = match db.journal_mode {
         JournalMode::Wal => "WAL",
         JournalMode::Delete => "DELETE",
@@ -343,10 +456,14 @@ fn render_database(out: &mut String, section: &str, db: &DatabaseConfig, env_pre
         JournalMode::Memory => "MEMORY",
         JournalMode::Off => "OFF",
     };
-    out.push_str(&format!(
-        "journal-mode = {} # WAL/DELETE/TRUNCATE/PERSIST/MEMORY/OFF; env: {env_prefix}_JOURNALMODE\n",
-        q(mode)
-    ));
+    push_line(
+        out,
+        f.and_then(|d| d.journal_mode.as_ref()).is_some(),
+        format!(
+            "journal-mode = {} # WAL/DELETE/TRUNCATE/PERSIST/MEMORY/OFF; env: {env_prefix}_JOURNALMODE",
+            q(mode)
+        ),
+    );
     match db.busy_timeout {
         Some(d) => out.push_str(&format!(
             "busy-timeout = {} # env: {env_prefix}_BUSYTIMEOUT\n",
