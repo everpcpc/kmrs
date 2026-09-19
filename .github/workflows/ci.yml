@@ -17,7 +17,8 @@ jobs:
       - run: cargo test --workspace
 
   docker:
-    runs-on: ubuntu-latest
+    # matches the glibc of the image's debian:bookworm-slim runtime
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
