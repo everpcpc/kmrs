@@ -418,7 +418,6 @@ async fn delete_api_key(
     Ok(StatusCode::NO_CONTENT)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
