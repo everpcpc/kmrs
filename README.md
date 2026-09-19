@@ -6,7 +6,7 @@ A Rust rewrite of the [Komga](https://komga.org) server. The goal is **full comp
 - Endpoints, DTOs, pagination, error shapes, and authentication behavior for REST `/api/**`, OPDS v1.2/v2, SSE, Kobo, and KOReader match the Java version
 - No UI
 
-The compatibility target is **komga 1.27.0**: the Flyway migrations, the OpenAPI document, and the behavior fixtures are taken from that release, and API behavior is ported from it.
+The compatibility target is **komga 1.27.0**: the Flyway migrations, the OpenAPI document, and the behavior fixtures are taken from that release, and API behavior is ported from it. Known deviations are cataloged in [docs/gaps.md](docs/gaps.md).
 
 ## Structure
 
