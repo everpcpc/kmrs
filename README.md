@@ -33,6 +33,23 @@ Run: `cargo run -p komga-server` produces the `kmrs` binary (default port 25600,
 
 `kmrs --help` lists the CLI flags (`--config-dir`, `--port`). The configuration file is always `<config-dir>/config.toml`; on first start it is generated from the built-in defaults, carrying over values from the Java komga's `application.yml`/`application.yaml` found in the same directory. See [examples/config.toml](examples/config.toml) for the full key list with defaults. Precedence: defaults < TOML file < env vars (Spring relaxed binding, e.g. `KOMGA_DATABASE_FILE`) < CLI flags.
 
+## Docker
+
+Every release publishes an image to `ghcr.io/everpcpc/kmrs` (tags: `latest`, `MAJOR.x`, `x.y.z`; platforms: `linux/amd64`, `linux/arm64`). It is a drop-in replacement for `gotson/komga` — same port, same `/config` and `/data` mounts, same `KOMGA_*` environment variables, so the [official Komga Docker instructions](https://komga.org/docs/installation/docker) apply verbatim, just with the image name swapped:
+
+```sh
+docker run -d \
+  --name=komga \
+  --user 1000:1000 \
+  -p 25600:25600 \
+  --mount type=bind,source=/path/to/config,target=/config \
+  --mount type=bind,source=/path/to/data,target=/data \
+  --restart unless-stopped \
+  ghcr.io/everpcpc/kmrs
+```
+
+An existing komga `/config` directory (with `database.sqlite` / `tasks.sqlite`) is picked up and upgraded in place. Note that kmrs serves the API/OPDS only — there is no web UI.
+
 ## Compatibility testing
 
 `tests/diff/diff.py` starts the Java komga and kmrs side by side over the same fixture library and compares ~105 endpoints (status, normalized JSON/XML bodies, headers, zip structure):
