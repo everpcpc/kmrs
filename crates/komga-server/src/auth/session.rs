@@ -23,6 +23,16 @@ pub struct SessionApiKey {
 pub struct SessionData {
     pub user_id: String,
     pub api_key: Option<SessionApiKey>,
+    /// Epoch millis; tracked for the actuator `/actuator/sessions` descriptors.
+    pub created_at: u64,
+    pub last_accessed_at: u64,
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 #[derive(Clone)]
@@ -40,25 +50,37 @@ impl SessionStore {
 
     pub fn create(&self, user_id: &str) -> String {
         let id = uuid::Uuid::new_v4().to_string();
+        let now = now_millis();
         self.cache.insert(
             id.clone(),
             SessionData {
                 user_id: user_id.to_string(),
                 api_key: None,
+                created_at: now,
+                last_accessed_at: now,
             },
         );
         id
     }
 
     pub fn get(&self, id: &str) -> Option<SessionData> {
-        self.cache.get(id)
+        let data = self.cache.get(id)?;
+        let mut data = data;
+        data.last_accessed_at = now_millis();
+        self.cache.insert(id.to_string(), data.clone());
+        Some(data)
+    }
+
+    /// All live sessions, for the actuator `/actuator/sessions` listing.
+    pub fn all(&self) -> Vec<(String, SessionData)> {
+        self.cache.iter().map(|(k, v)| ((*k).clone(), v)).collect()
     }
 
     /// Replaces the session's identity with the API-key authentication, like Spring's
     /// `SecurityContextRepository` saving the new context. Unknown session ids are ignored:
     /// API-key auth never establishes a session.
     pub fn mark_api_key(&self, id: &str, user_id: &str, key_id: &str, key_hash: &str) {
-        if self.cache.contains_key(id) {
+        if let Some(existing) = self.cache.get(id) {
             self.cache.insert(
                 id.to_string(),
                 SessionData {
@@ -67,6 +89,8 @@ impl SessionStore {
                         id: key_id.to_string(),
                         hash: key_hash.to_string(),
                     }),
+                    created_at: existing.created_at,
+                    last_accessed_at: now_millis(),
                 },
             );
         }
