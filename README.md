@@ -8,7 +8,7 @@
 A drop-in, API-compatible reimplementation of the [Komga](https://komga.org) comic/manga server in Rust — a single static binary, no JVM required.
 
 > [!NOTE]
-> kmrs serves the API and OPDS feeds only — there is **no web UI**. Pair it with any Komga-compatible client (KOReader, Kobo, Paperback, Tachidesk, …).
+> kmrs serves the API and OPDS feeds only — there is **no web UI**. Pair it with a Komga-compatible client — [KMReader](https://github.com/everpcpc/KMReader) (iOS/macOS/tvOS), KOReader, Kobo, and [others](https://komga.org/docs/category/readers).
 
 ## Features
 
