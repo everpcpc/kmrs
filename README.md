@@ -118,4 +118,4 @@ Ignored but behavior-equivalent (not limitations): `server.tomcat.*` (tomcat-spe
 
 ## License
 
-kmrs is under the [MIT License](LICENSE). The SQL migration files, the OpenAPI document, and the test fixtures are copied from the [komga](https://github.com/gotson/komga) source tree; everything else is a rewritten implementation. kmrs is not affiliated with the komga project.
+kmrs is under the [MIT License](LICENSE). The SQL migration files, the OpenAPI document, and the test fixtures are copied from the [komga](https://github.com/gotson/komga) source tree (see [NOTICE](NOTICE)); everything else is a rewritten implementation. kmrs is not affiliated with the komga project.
