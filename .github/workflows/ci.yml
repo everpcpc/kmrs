@@ -35,11 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@nextest
       - uses: Swatinem/rust-cache@v2
         with:
           cache-targets: "false"
       - uses: mozilla-actions/sccache-action@v0.0.11
-      - run: cargo test --workspace
+      - run: cargo nextest run --workspace
 
   docker:
     # build glibc (2.39) must not exceed the debian:trixie-slim runtime's (2.41)
