@@ -13,6 +13,7 @@
 
 use crate::auth::{MaybeAuth, RequireAuth};
 use crate::error::ApiError;
+use crate::http::pagination::QueryExt;
 use crate::state::AppState;
 use axum::extract::{Path, State};
 use axum::http::header::CONTENT_TYPE;
@@ -314,15 +315,21 @@ struct MetricNames {
 struct MetricBody {
     name: &'static str,
     description: &'static str,
-    base_unit: &'static str,
+    base_unit: Option<&'static str>,
     measurements: Vec<MetricMeasurement>,
-    available_tags: Vec<String>,
+    available_tags: Vec<AvailableTag>,
 }
 
 #[derive(Serialize)]
 struct MetricMeasurement {
     statistic: &'static str,
     value: f64,
+}
+
+#[derive(Serialize)]
+struct AvailableTag {
+    tag: &'static str,
+    values: Vec<String>,
 }
 
 const METRICS: &[&str] = &[
@@ -334,110 +341,313 @@ const METRICS: &[&str] = &[
     "komga.readlists",
     "komga.series",
     "komga.sidecars",
+    "komga.tasks.execution",
+    "komga.tasks.failure",
     "process.cpu.usage",
     "process.start.time",
     "process.uptime",
 ];
 
+/// MultiGauge-backed names (`MetricsPublisherController`): the meter exists only while its
+/// per-library rows are non-empty, so an empty library makes the name vanish entirely.
+const MULTI_GAUGES: &[&str] = &[
+    "komga.series",
+    "komga.books",
+    "komga.books.filesize",
+    "komga.sidecars",
+];
+
 /// Only ADMIN (`EndpointRequest.toAnyEndpoint().hasRole(ADMIN)`).
-async fn get_metric_names(auth: RequireAuth) -> Result<Response, ApiError> {
+async fn get_metric_names(
+    State(state): State<AppState>,
+    auth: RequireAuth,
+) -> Result<Response, ApiError> {
     auth.0.require_admin()?;
-    Ok(actuator_response(&MetricNames {
-        names: METRICS.to_vec(),
-    }))
+    let names = METRICS
+        .iter()
+        .filter(|name| !MULTI_GAUGES.contains(name) || !multi_gauge_rows(&state, name).is_empty())
+        .copied()
+        .collect();
+    Ok(actuator_response(&MetricNames { names }))
 }
 
 async fn get_metric(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     auth: RequireAuth,
     Path(name): Path<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
 ) -> Result<Response, ApiError> {
     auth.0.require_admin()?;
+    // Spring's `MetricsEndpoint`: repeated `tag=key:value` filters meters; no match → 404
+    let tags: Vec<(String, String)> =
+        crate::http::pagination::parse_query_multi(query.as_deref().unwrap_or(""))
+            .all("tag")
+            .iter()
+            .filter_map(|t| {
+                t.split_once(':')
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+            })
+            .collect();
     let body = match name.as_str() {
-        "jvm.memory.used" => MetricBody {
-            name: "jvm.memory.used",
-            description: "The amount of used memory",
-            base_unit: "bytes",
-            measurements: vec![MetricMeasurement {
-                statistic: "VALUE",
-                value: rss_bytes() as f64,
-            }],
-            available_tags: vec![],
-        },
-        "process.start.time" => MetricBody {
-            name: "process.start.time",
-            description: "Start time of the process",
-            base_unit: "milliseconds",
-            measurements: vec![MetricMeasurement {
-                statistic: "VALUE",
-                value: process_start().1,
-            }],
-            available_tags: vec![],
-        },
-        "process.uptime" => MetricBody {
-            name: "process.uptime",
-            description: "The uptime of the Java virtual machine",
-            base_unit: "seconds",
-            measurements: vec![MetricMeasurement {
-                statistic: "VALUE",
-                value: process_start().0.elapsed().as_secs_f64(),
-            }],
-            available_tags: vec![],
-        },
-        "process.cpu.usage" => MetricBody {
-            name: "process.cpu.usage",
-            description: "The \"recent cpu usage\" for the Java Virtual Machine process",
-            base_unit: "percent",
-            measurements: vec![MetricMeasurement {
-                statistic: "VALUE",
-                value: cpu_usage_percent(),
-            }],
-            available_tags: vec![],
-        },
-        name if name.starts_with("komga.") => komga_gauge(name, &_state)?,
+        "jvm.memory.used" => {
+            reject_tags(&tags)?;
+            MetricBody {
+                name: "jvm.memory.used",
+                description: "The amount of used memory",
+                base_unit: Some("bytes"),
+                measurements: vec![MetricMeasurement {
+                    statistic: "VALUE",
+                    value: rss_bytes() as f64,
+                }],
+                available_tags: vec![],
+            }
+        }
+        "process.start.time" => {
+            reject_tags(&tags)?;
+            MetricBody {
+                name: "process.start.time",
+                description: "Start time of the process",
+                base_unit: Some("milliseconds"),
+                measurements: vec![MetricMeasurement {
+                    statistic: "VALUE",
+                    value: process_start().1,
+                }],
+                available_tags: vec![],
+            }
+        }
+        "process.uptime" => {
+            reject_tags(&tags)?;
+            MetricBody {
+                name: "process.uptime",
+                description: "The uptime of the Java virtual machine",
+                base_unit: Some("seconds"),
+                measurements: vec![MetricMeasurement {
+                    statistic: "VALUE",
+                    value: process_start().0.elapsed().as_secs_f64(),
+                }],
+                available_tags: vec![],
+            }
+        }
+        "process.cpu.usage" => {
+            reject_tags(&tags)?;
+            MetricBody {
+                name: "process.cpu.usage",
+                description: "The \"recent cpu usage\" for the Java Virtual Machine process",
+                base_unit: Some("percent"),
+                measurements: vec![MetricMeasurement {
+                    statistic: "VALUE",
+                    value: cpu_usage_percent(),
+                }],
+                available_tags: vec![],
+            }
+        }
+        "komga.tasks.execution" => tasks_execution_metric(&tags)?,
+        "komga.tasks.failure" => tasks_failure_metric(&tags)?,
+        name if name.starts_with("komga.") => komga_gauge(name, &state, &tags)?,
         _ => return Err(ApiError::not_found("")),
     };
     Ok(actuator_response(&body))
 }
 
-/// `MetricsPublisherController` gauges: entity counts read straight from the database.
-fn komga_gauge(name: &str, state: &AppState) -> Result<MetricBody, ApiError> {
-    let (description, base_unit, value) = match name {
-        "komga.libraries" => (
-            "Number of libraries",
-            "libraries",
-            count_of(state, "LIBRARY"),
+fn reject_tags(tags: &[(String, String)]) -> Result<(), ApiError> {
+    if tags.is_empty() {
+        Ok(())
+    } else {
+        Err(ApiError::not_found(""))
+    }
+}
+
+/// Narrows the tag filter to the single tag our meters carry; any other combination matches
+/// no meter (Spring answers 404 then).
+fn tag_value<'a>(tags: &'a [(String, String)], key: &str) -> Result<Option<&'a str>, ApiError> {
+    match tags {
+        [] => Ok(None),
+        [(k, v)] if k == key => Ok(Some(v)),
+        _ => Err(ApiError::not_found("")),
+    }
+}
+
+fn tasks_execution_metric(tags: &[(String, String)]) -> Result<MetricBody, ApiError> {
+    let metrics = crate::service::metrics::task_metrics();
+    let filter = tag_value(tags, "type")?;
+    let (count, total, max) = match filter {
+        Some(task_type) => {
+            let m = metrics
+                .get(task_type)
+                .ok_or_else(|| ApiError::not_found(""))?;
+            (m.executions, m.total, m.max)
+        }
+        None => metrics.values().fold(
+            (0, std::time::Duration::ZERO, std::time::Duration::ZERO),
+            |(count, total, max), m| (count + m.executions, total + m.total, max.max(m.max)),
         ),
-        "komga.series" => ("Number of series", "series", count_of(state, "SERIES")),
-        "komga.books" => ("Number of books", "books", count_of(state, "BOOK")),
-        "komga.books.filesize" => (
-            "Total file size of all books",
-            "bytes",
-            sum_of(state, "SELECT COALESCE(SUM(FILE_SIZE), 0) FROM BOOK"),
-        ),
-        "komga.collections" => (
-            "Number of collections",
-            "collections",
-            count_of(state, "COLLECTION"),
-        ),
-        "komga.readlists" => (
-            "Number of read lists",
-            "read lists",
-            count_of(state, "READLIST"),
-        ),
-        "komga.sidecars" => ("Number of sidecars", "sidecars", count_of(state, "SIDECAR")),
+    };
+    Ok(MetricBody {
+        name: "komga.tasks.execution",
+        description: "Task execution time",
+        base_unit: Some("seconds"),
+        measurements: vec![
+            MetricMeasurement {
+                statistic: "COUNT",
+                value: count as f64,
+            },
+            MetricMeasurement {
+                statistic: "TOTAL_TIME",
+                value: total.as_secs_f64(),
+            },
+            MetricMeasurement {
+                statistic: "MAX",
+                value: max.as_secs_f64(),
+            },
+        ],
+        available_tags: type_tags(&metrics, filter),
+    })
+}
+
+fn tasks_failure_metric(tags: &[(String, String)]) -> Result<MetricBody, ApiError> {
+    let metrics = crate::service::metrics::task_metrics();
+    let filter = tag_value(tags, "type")?;
+    let failures = match filter {
+        Some(task_type) => {
+            metrics
+                .get(task_type)
+                .ok_or_else(|| ApiError::not_found(""))?
+                .failures
+        }
+        None => metrics.values().map(|m| m.failures).sum(),
+    };
+    Ok(MetricBody {
+        name: "komga.tasks.failure",
+        description: "Count of failed tasks",
+        base_unit: None,
+        measurements: vec![MetricMeasurement {
+            statistic: "COUNT",
+            value: failures as f64,
+        }],
+        available_tags: type_tags(&metrics, filter),
+    })
+}
+
+fn type_tags(
+    metrics: &std::collections::BTreeMap<&'static str, crate::service::metrics::TaskTypeMetrics>,
+    filter: Option<&str>,
+) -> Vec<AvailableTag> {
+    match filter {
+        Some(task_type) => vec![AvailableTag {
+            tag: "type",
+            values: vec![task_type.to_string()],
+        }],
+        None if metrics.is_empty() => vec![],
+        None => vec![AvailableTag {
+            tag: "type",
+            values: metrics.keys().map(|k| k.to_string()).collect(),
+        }],
+    }
+}
+
+/// `MetricsPublisherController` gauges. MultiGauge-backed ones carry a `library` tag with one
+/// value per library; the plain gauges have no tags.
+fn komga_gauge(
+    name: &str,
+    state: &AppState,
+    tags: &[(String, String)],
+) -> Result<MetricBody, ApiError> {
+    let (description, base_unit, value, available_tags) = match name {
+        "komga.libraries" => {
+            reject_tags(tags)?;
+            (
+                "The number of libraries",
+                "count",
+                count_of(state, "LIBRARY"),
+                vec![],
+            )
+        }
+        "komga.collections" => {
+            reject_tags(tags)?;
+            (
+                "The number of collections",
+                "count",
+                count_of(state, "COLLECTION"),
+                vec![],
+            )
+        }
+        "komga.readlists" => {
+            reject_tags(tags)?;
+            (
+                "The number of read lists",
+                "count",
+                count_of(state, "READLIST"),
+                vec![],
+            )
+        }
+        _ if MULTI_GAUGES.contains(&name) => {
+            let filter = tag_value(tags, "library")?;
+            let rows = multi_gauge_rows(state, name);
+            if rows.is_empty() {
+                return Err(ApiError::not_found(""));
+            }
+            let (value, available_tags) = match filter {
+                Some(library) => (
+                    rows.iter()
+                        .find(|(id, _)| id == library)
+                        .map(|(_, v)| *v)
+                        .ok_or_else(|| ApiError::not_found(""))?,
+                    vec![AvailableTag {
+                        tag: "library",
+                        values: vec![library.to_string()],
+                    }],
+                ),
+                None => (
+                    rows.iter().map(|(_, v)| v).sum(),
+                    vec![AvailableTag {
+                        tag: "library",
+                        values: rows.into_iter().map(|(id, _)| id).collect(),
+                    }],
+                ),
+            };
+            let (description, base_unit) = match name {
+                "komga.series" => ("The number of series", "count"),
+                "komga.books" => ("The number of books", "count"),
+                "komga.books.filesize" => ("The cumulated filesize of books", "bytes"),
+                _ => ("The number of sidecars", "count"),
+            };
+            (description, base_unit, value, available_tags)
+        }
         _ => return Err(ApiError::not_found("")),
     };
     Ok(MetricBody {
         name: name_static(name),
-        description: description_static(description),
-        base_unit: base_unit_static(base_unit),
+        description,
+        base_unit: Some(base_unit),
         measurements: vec![MetricMeasurement {
             statistic: "VALUE",
             value,
         }],
-        available_tags: vec![],
+        available_tags,
     })
+}
+
+/// Per-library rows of a MultiGauge (`countGroupedByLibraryId` / `getFilesizeGroupedByLibraryId`).
+fn multi_gauge_rows(state: &AppState, name: &str) -> Vec<(String, f64)> {
+    let sql = match name {
+        "komga.series" => "SELECT LIBRARY_ID, COUNT(*) FROM SERIES GROUP BY LIBRARY_ID",
+        "komga.books" => "SELECT LIBRARY_ID, COUNT(*) FROM BOOK GROUP BY LIBRARY_ID",
+        "komga.books.filesize" => {
+            "SELECT LIBRARY_ID, COALESCE(SUM(FILE_SIZE), 0) FROM BOOK GROUP BY LIBRARY_ID"
+        }
+        "komga.sidecars" => "SELECT LIBRARY_ID, COUNT(*) FROM SIDECAR GROUP BY LIBRARY_ID",
+        _ => return vec![],
+    };
+    let conn = state.db.ro();
+    let mut stmt = match conn.prepare(sql) {
+        Ok(stmt) => stmt,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as f64))
+    })
+    .map(|rows| rows.filter_map(Result::ok).collect())
+    .unwrap_or_default()
 }
 
 fn name_static(name: &str) -> &'static str {
@@ -453,32 +663,6 @@ fn name_static(name: &str) -> &'static str {
     }
 }
 
-fn description_static(s: &str) -> &'static str {
-    match s {
-        "Number of libraries" => "Number of libraries",
-        "Number of series" => "Number of series",
-        "Number of books" => "Number of books",
-        "Total file size of all books" => "Total file size of all books",
-        "Number of collections" => "Number of collections",
-        "Number of read lists" => "Number of read lists",
-        "Number of sidecars" => "Number of sidecars",
-        _ => unreachable!(),
-    }
-}
-
-fn base_unit_static(s: &str) -> &'static str {
-    match s {
-        "libraries" => "libraries",
-        "series" => "series",
-        "books" => "books",
-        "bytes" => "bytes",
-        "collections" => "collections",
-        "read lists" => "read lists",
-        "sidecars" => "sidecars",
-        _ => unreachable!(),
-    }
-}
-
 fn count_of(state: &AppState, table: &str) -> f64 {
     state
         .db
@@ -486,14 +670,6 @@ fn count_of(state: &AppState, table: &str) -> f64 {
         .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
             r.get::<_, i64>(0)
         })
-        .unwrap_or(0) as f64
-}
-
-fn sum_of(state: &AppState, sql: &str) -> f64 {
-    state
-        .db
-        .ro()
-        .query_row(sql, [], |r| r.get::<_, i64>(0))
         .unwrap_or(0) as f64
 }
 
@@ -808,11 +984,74 @@ mod tests {
         assert!(body["os"]["arch"].is_string());
     }
 
+    /// A library with one series, one book (1 KiB) and one sidecar.
+    fn seed_library_data(state: &AppState) {
+        let conn = state.db.rw();
+        conn.execute(
+            "INSERT INTO LIBRARY (ID, NAME, ROOT) VALUES ('lib1', 'L1', 'file:/l1/')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO SERIES (ID, FILE_LAST_MODIFIED, NAME, URL, LIBRARY_ID) \
+             VALUES ('s1', '2024-01-01', 'S1', 'file:/l1/s1', 'lib1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO BOOK (ID, FILE_LAST_MODIFIED, NAME, URL, SERIES_ID, LIBRARY_ID, FILE_SIZE) \
+             VALUES ('b1', '2024-01-01', 'B1', 'file:/l1/s1/b1.cbz', 's1', 'lib1', 1024)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO SIDECAR (URL, PARENT_URL, LAST_MODIFIED_TIME, LIBRARY_ID) \
+             VALUES ('file:/l1/s1/b1.json', 'file:/l1/s1/b1.cbz', '2024-01-01', 'lib1')",
+            [],
+        )
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn metrics_names_and_single_metric() {
         let (state, _rx) = test_state();
         seed_user(&state, "admin@komga.org", true, "k1");
-        let app = test_router(state);
+        let app = test_router(state.clone());
+        let (status, _headers, bytes) = call(&app, "GET", "/actuator/metrics", Some("k1")).await;
+        assert_eq!(status, StatusCode::OK);
+        let body = json(&bytes);
+        // MultiGauge-backed names (komga.series/books/books.filesize/sidecars) vanish without rows
+        assert_eq!(
+            body["names"],
+            serde_json::json!([
+                "jvm.memory.used",
+                "komga.collections",
+                "komga.libraries",
+                "komga.readlists",
+                "komga.tasks.execution",
+                "komga.tasks.failure",
+                "process.cpu.usage",
+                "process.start.time",
+                "process.uptime"
+            ])
+        );
+        for name in [
+            "komga.series",
+            "komga.books",
+            "komga.books.filesize",
+            "komga.sidecars",
+        ] {
+            let (status, _headers, _bytes) = call(
+                &app,
+                "GET",
+                &format!("/actuator/metrics/{name}"),
+                Some("k1"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{name}");
+        }
+
+        seed_library_data(&state);
         let (status, _headers, bytes) = call(&app, "GET", "/actuator/metrics", Some("k1")).await;
         assert_eq!(status, StatusCode::OK);
         let body = json(&bytes);
@@ -827,6 +1066,8 @@ mod tests {
                 "komga.readlists",
                 "komga.series",
                 "komga.sidecars",
+                "komga.tasks.execution",
+                "komga.tasks.failure",
                 "process.cpu.usage",
                 "process.start.time",
                 "process.uptime"
@@ -839,8 +1080,6 @@ mod tests {
             "process.uptime",
             "process.cpu.usage",
             "komga.libraries",
-            "komga.books",
-            "komga.books.filesize",
         ] {
             let (status, _headers, bytes) = call(
                 &app,
@@ -857,6 +1096,70 @@ mod tests {
             assert!(body["measurements"][0]["value"].as_f64().unwrap() >= 0.0);
             assert_eq!(body["availableTags"], serde_json::json!([]));
         }
+
+        // MultiGauge-backed metrics carry a `library` tag, aggregated over all rows
+        for (name, value) in [
+            ("komga.series", 1.0),
+            ("komga.books", 1.0),
+            ("komga.books.filesize", 1024.0),
+            ("komga.sidecars", 1.0),
+        ] {
+            let (status, _headers, bytes) = call(
+                &app,
+                "GET",
+                &format!("/actuator/metrics/{name}"),
+                Some("k1"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{name}");
+            let body = json(&bytes);
+            assert_eq!(body["name"], name);
+            assert_eq!(body["measurements"][0]["statistic"], "VALUE");
+            assert_eq!(body["measurements"][0]["value"], value);
+            assert_eq!(
+                body["availableTags"],
+                serde_json::json!([{"tag": "library", "values": ["lib1"]}])
+            );
+
+            let (status, _headers, bytes) = call(
+                &app,
+                "GET",
+                &format!("/actuator/metrics/{name}?tag=library:lib1"),
+                Some("k1"),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{name}");
+            let body = json(&bytes);
+            assert_eq!(body["measurements"][0]["value"], value);
+            assert_eq!(
+                body["availableTags"],
+                serde_json::json!([{"tag": "library", "values": ["lib1"]}])
+            );
+
+            // a tag no meter carries → 404, like Spring
+            for query in ["tag=library:other", "tag=type:ScanLibrary"] {
+                let (status, _headers, _bytes) = call(
+                    &app,
+                    "GET",
+                    &format!("/actuator/metrics/{name}?{query}"),
+                    Some("k1"),
+                )
+                .await;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{name}?{query}");
+            }
+        }
+
+        let (status, _headers, bytes) = call(
+            &app,
+            "GET",
+            "/actuator/metrics/komga.books.filesize",
+            Some("k1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let body = json(&bytes);
+        assert_eq!(body["description"], "The cumulated filesize of books");
+        assert_eq!(body["baseUnit"], "bytes");
 
         let (status, _headers, bytes) =
             call(&app, "GET", "/actuator/metrics/process.uptime", Some("k1")).await;
@@ -881,6 +1184,105 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(json(&bytes)["baseUnit"], "bytes");
         assert!(json(&bytes)["measurements"][0]["value"].as_f64().unwrap() > 0.0);
+    }
+
+    #[tokio::test]
+    async fn tasks_metrics_shape_and_tag_filter() {
+        let (state, _rx) = test_state();
+        seed_user(&state, "admin@komga.org", true, "k1");
+        let app = test_router(state);
+
+        // a made-up type keeps the assertions deterministic: other tests in this binary
+        // record real task types into the same process-global registry
+        crate::service::metrics::record_task_execution(
+            "NoRealTask",
+            std::time::Duration::from_millis(120),
+            true,
+        );
+        crate::service::metrics::record_task_execution(
+            "NoRealTask",
+            std::time::Duration::ZERO,
+            false,
+        );
+
+        let (status, _headers, bytes) = call(
+            &app,
+            "GET",
+            "/actuator/metrics/komga.tasks.execution",
+            Some("k1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let body = json(&bytes);
+        assert_eq!(body["name"], "komga.tasks.execution");
+        assert_eq!(body["description"], "Task execution time");
+        assert_eq!(body["baseUnit"], "seconds");
+        let statistics: Vec<&str> = body["measurements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["statistic"].as_str().unwrap())
+            .collect();
+        assert_eq!(statistics, ["COUNT", "TOTAL_TIME", "MAX"]);
+        assert!(body["measurements"][0]["value"].as_f64().unwrap() >= 1.0);
+
+        let (status, _headers, bytes) = call(
+            &app,
+            "GET",
+            "/actuator/metrics/komga.tasks.execution?tag=type:NoRealTask",
+            Some("k1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let body = json(&bytes);
+        assert_eq!(body["measurements"][0]["value"], 1.0);
+        assert_eq!(body["measurements"][1]["value"], 0.12);
+        assert_eq!(body["measurements"][2]["value"], 0.12);
+        assert_eq!(
+            body["availableTags"],
+            serde_json::json!([{"tag": "type", "values": ["NoRealTask"]}])
+        );
+
+        let (status, _headers, bytes) = call(
+            &app,
+            "GET",
+            "/actuator/metrics/komga.tasks.failure",
+            Some("k1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let body = json(&bytes);
+        assert_eq!(body["name"], "komga.tasks.failure");
+        assert_eq!(body["description"], "Count of failed tasks");
+        assert!(body["baseUnit"].is_null());
+        assert_eq!(body["measurements"][0]["statistic"], "COUNT");
+
+        let (status, _headers, bytes) = call(
+            &app,
+            "GET",
+            "/actuator/metrics/komga.tasks.failure?tag=type:NoRealTask",
+            Some("k1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json(&bytes)["measurements"][0]["value"], 1.0);
+
+        let (status, _headers, _bytes) = call(
+            &app,
+            "GET",
+            "/actuator/metrics/komga.tasks.execution?tag=type:DoesNotExist",
+            Some("k1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _headers, _bytes) = call(
+            &app,
+            "GET",
+            "/actuator/metrics/komga.tasks.execution?tag=library:lib1",
+            Some("k1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

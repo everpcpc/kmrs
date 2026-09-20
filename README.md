@@ -104,7 +104,7 @@ Places where kmrs deviates from the Java version. Scope exclusions (no web UI) a
 
 ### Actuator
 
-- Only a subset of Spring's actuator is implemented (health, info, metrics, scheduledtasks, shutdown), and metrics are limited to about ten names.
+- Only a subset of Spring's actuator is implemented (health, info, metrics, scheduledtasks, shutdown), and metrics are limited to about a dozen names.
 
 ### Ignored Java configuration keys
 
