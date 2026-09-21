@@ -136,7 +136,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: ./.github/actions/build-webui
+      - uses: ./.github/actions/fetch-webui
       - name: Package
         run: tar -czf webui.tar.gz -C dist/webui .
       - uses: actions/upload-artifact@v7
