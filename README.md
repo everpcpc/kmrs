@@ -110,6 +110,8 @@ Places where kmrs deviates from the Java version. Scope exclusions are intention
 
 ### Search
 
+The analyzer chain and kmrs's search enhancements over the Java version (CJK boundary unigrams, simplified ↔ traditional cross-search) are documented in [docs/search.md](docs/search.md).
+
 - Lucene fuzzy (`~`) and phrase-slop (`~N`) queries are unsupported and yield empty results.
 - `komga.lucene.index-analyzer.*` and `komga.lucene.commit-delay` are ignored (warned and dropped during Java config migration); the analyzer is fixed to the multilingual ngram chain.
 
