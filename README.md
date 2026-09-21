@@ -8,7 +8,7 @@
 A drop-in, API-compatible reimplementation of the [Komga](https://komga.org) comic/manga server in Rust — a single static binary, no JVM required.
 
 > [!NOTE]
-> kmrs serves the API and OPDS feeds only — there is **no web UI**. Pair it with a Komga-compatible client — [KMReader](https://github.com/kmworks/kmreader) (iOS/macOS/tvOS), KOReader, Kobo, and [others](https://komga.org/docs/category/readers). If you want the original Komga web UI in a browser, you can host it yourself behind a reverse proxy — see [docs/webui.md](docs/webui.md).
+> kmrs serves the API and OPDS feeds only — there is **no bundled web UI**. Pair it with a Komga-compatible client — [KMReader](https://github.com/kmworks/kmreader) (iOS/macOS/tvOS), KOReader, Kobo, and [others](https://komga.org/docs/category/readers). To use the original Komga web UI in a browser, let kmrs serve a built webui (`webui.dir` / `KOMGA_WEBUI_DIR`) or host it behind a reverse proxy — see [docs/webui.md](docs/webui.md).
 
 ## Features
 
