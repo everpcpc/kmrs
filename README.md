@@ -16,6 +16,7 @@ A drop-in, API-compatible reimplementation of the [Komga](https://komga.org) com
 - **Data-level compatibility**: opens and upgrades existing komga data directories (`database.sqlite`, `tasks.sqlite`) in place — and the Java version can still open libraries written by kmrs
 - **API parity**: REST `/api/**`, OPDS v1.2/v2, SSE, Kobo sync, and KOReader progress sync — endpoints, DTOs, pagination, error shapes, and authentication behavior match the Java version
 - **Verified against the Java version**: byte-for-byte Flyway migrations, a differential test harness comparing ~105 endpoints against a live Java instance, and schema contract tests
+- **Search enhancements** on top of the Java version's analyzer: simplified ↔ traditional Chinese cross-search and CJK boundary unigrams — see [docs/search.md](docs/search.md)
 
 ## Quick start
 
@@ -109,8 +110,6 @@ Places where kmrs deviates from the Java version. Scope exclusions are intention
 - JPEG output is not byte-identical to ImageIO (different encoder) — an accepted deviation that affects byte-level comparisons of thumbnails and page hashes.
 
 ### Search
-
-The analyzer chain and kmrs's search enhancements over the Java version (CJK boundary unigrams, simplified ↔ traditional cross-search) are documented in [docs/search.md](docs/search.md).
 
 - Lucene fuzzy (`~`) and phrase-slop (`~N`) queries are unsupported and yield empty results.
 - `komga.lucene.index-analyzer.*` and `komga.lucene.commit-delay` are ignored (warned and dropped during Java config migration); the analyzer is fixed to the multilingual ngram chain.
