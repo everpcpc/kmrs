@@ -853,6 +853,7 @@ struct EpubPackage {
     /// manifest items in document order (Kotlin's LinkedHashMap)
     manifest: Vec<ManifestItem>,
     manifest_by_id: HashMap<String, usize>,
+    entry_metas_cache: Option<Vec<ZipEntryMeta>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -863,6 +864,7 @@ struct ManifestItem {
     properties: BTreeSet<String>,
 }
 
+#[derive(Clone)]
 struct ZipEntryMeta {
     name: String,
     size: i64,
@@ -874,7 +876,12 @@ impl EpubPackage {
         self.manifest_by_id.get(id).map(|&i| &self.manifest[i])
     }
 
+    /// One lazy full-directory scan, cached for the whole analysis (a scan walks every
+    /// entry and touches each local header, so it should happen at most once per book).
     fn entry_metas(&mut self) -> Vec<ZipEntryMeta> {
+        if let Some(cache) = &self.entry_metas_cache {
+            return cache.clone();
+        }
         let mut out = vec![];
         for i in 0..self.archive.len() {
             if let Ok(e) = self.archive.by_index(i) {
@@ -885,6 +892,7 @@ impl EpubPackage {
                 });
             }
         }
+        self.entry_metas_cache = Some(out.clone());
         out
     }
 
@@ -968,6 +976,7 @@ fn open_epub(book_path: &Path) -> Result<EpubPackage> {
         opf_dir,
         manifest,
         manifest_by_id,
+        entry_metas_cache: None,
     })
 }
 
@@ -1096,39 +1105,13 @@ fn get_divina_pages(
             pages_with_images.push(vec![]);
             continue;
         };
-        let doc = parse_xml(&content).map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?;
-        // a page with text over the threshold makes the whole book not divina compatible
-        if body_text_len(&doc) > analyzer.letter_count_threshold {
-            return Ok(vec![]);
+        // single streaming pass over the page: text threshold + image collection in one
+        // scan, no DOM tree (divina_image_source pattern)
+        match scan_divina_page(&content, &page_path, analyzer.letter_count_threshold) {
+            Ok(Some(images)) => pages_with_images.push(images),
+            Ok(None) => return Ok(vec![]),
+            Err(e) => return Err(e),
         }
-        let mut images: Vec<String> = vec![];
-        for img in doc
-            .descendants()
-            .filter(|n| n.is_element() && n.tag_name().name() == "img")
-        {
-            if let Some(src) = img.attribute("src") {
-                images.push(resolve_relative(&page_path, &percent_decode(src)));
-            }
-        }
-        for svg in doc
-            .descendants()
-            .filter(|n| n.is_element() && n.tag_name().name() == "svg")
-        {
-            for img in svg
-                .children()
-                .filter(|c| c.is_element() && c.tag_name().name() == "image")
-            {
-                // accept both `href` and the namespaced `xlink:href`
-                if let Some(href) = img
-                    .attributes()
-                    .find(|a| a.name() == "href" || a.name().ends_with(":href"))
-                    .map(|a| a.value())
-                {
-                    images.push(resolve_relative(&page_path, &percent_decode(href)));
-                }
-            }
-        }
-        pages_with_images.push(images);
     }
 
     if pages_with_images.len() != page_count {
@@ -1158,6 +1141,7 @@ fn get_divina_pages(
     }
 
     let mut divina_pages: Vec<BookPage> = vec![];
+    let metas = pkg.entry_metas();
     for image_path in &images_path {
         let Some(media_type) = pkg
             .manifest
@@ -1175,7 +1159,6 @@ fn get_divina_pages(
         if !detect::is_image(&media_type) {
             return Ok(vec![]);
         }
-        let metas = pkg.entry_metas();
         let Some(meta) = metas.iter().find(|m| entry_matches(image_path, &m.name)) else {
             // Kotlin NPEs here, which the caller reports as ERR_1038
             return Err(MediaError::EntryNotFound(image_path.clone()));
@@ -1214,38 +1197,205 @@ fn get_divina_pages(
     Ok(divina_pages)
 }
 
-/// jsoup `body().text()`: all text under the first body element, whitespace-normalized,
-/// counted in UTF-16 code units like a Java String
-fn body_text_len(doc: &roxmltree::Document) -> usize {
-    let Some(body) = doc
-        .descendants()
-        .find(|n| n.is_element() && n.tag_name().name() == "body")
-    else {
-        return 0;
-    };
-    let text: String = body
-        .descendants()
-        .filter(|n| n.is_text())
-        .map(|n| n.text().unwrap_or(""))
-        .collect();
-    let normalized: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    normalized.encode_utf16().count()
+/// Single streaming pass over one spine page: mirrors the DOM-based `body_text_len` +
+/// image collection without building a tree. Counts non-whitespace UTF-16 units of body
+/// text and collects `img@src` anywhere plus `image@href`/`*:href` whose parent is `svg`.
+/// `Ok(None)` means the page text exceeds the threshold (book not divina compatible).
+fn scan_divina_page(
+    content: &str,
+    page_path: &str,
+    letter_count_threshold: usize,
+) -> Result<Option<Vec<String>>> {
+    let mut reader = quick_xml::Reader::from_reader(content.as_bytes());
+    reader.config_mut().trim_text(false);
+    let mut buffer = Vec::new();
+    // ancestor element local names; lets us detect `image` whose parent is `svg`
+    let mut stack: Vec<String> = Vec::new();
+    let mut inside_body = false;
+    // jsoup `body().text()` parity: non-whitespace UTF-16 units accumulate and each
+    // whitespace run closing a word counts as the single normalized space jsoup inserts
+    let mut in_word = false;
+    let mut word_count = 0usize;
+    let mut non_ws_units = 0usize;
+    let mut images: Vec<String> = vec![];
+
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(quick_xml::events::Event::Start(e)) => {
+                let qname = e.name();
+                let name = xml_local_name(qname.as_ref());
+                if name == "body" {
+                    inside_body = true;
+                } else if name == "img" {
+                    push_image_attr(e.attributes().flatten(), b"src", page_path, &mut images);
+                } else if name == "image" && stack.last().map(|p| p == "svg").unwrap_or(false) {
+                    push_image_href(e.attributes().flatten(), page_path, &mut images);
+                }
+                stack.push(name.to_string());
+            }
+            Ok(quick_xml::events::Event::Empty(e)) => {
+                let qname = e.name();
+                let name = xml_local_name(qname.as_ref());
+                if name == "img" {
+                    push_image_attr(e.attributes().flatten(), b"src", page_path, &mut images);
+                } else if name == "image" && stack.last().map(|p| p == "svg").unwrap_or(false) {
+                    push_image_href(e.attributes().flatten(), page_path, &mut images);
+                }
+            }
+            Ok(quick_xml::events::Event::End(e)) => {
+                let qname = e.name();
+                let name = xml_local_name(qname.as_ref());
+                if name == "body" {
+                    inside_body = false;
+                }
+                if stack.last().map(|p| p == name).unwrap_or(false) {
+                    stack.pop();
+                }
+            }
+            Ok(quick_xml::events::Event::Text(t)) if inside_body => {
+                // unescape failures (e.g. XHTML's &nbsp;) fall back to the raw chunk
+                // instead of silently dropping it
+                add_body_text(
+                    t.unescape()
+                        .map(|cow| cow.into_owned())
+                        .unwrap_or_else(|_| String::from_utf8_lossy(t.as_ref()).into_owned())
+                        .as_bytes(),
+                    &mut in_word,
+                    &mut word_count,
+                    &mut non_ws_units,
+                );
+            }
+            Ok(quick_xml::events::Event::CData(t)) if inside_body => {
+                add_body_text(t.as_ref(), &mut in_word, &mut word_count, &mut non_ws_units);
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(e) => return Err(MediaError::Other(anyhow::anyhow!(e))),
+            _ => {}
+        }
+        buffer.clear();
+    }
+
+    if in_word {
+        word_count += 1;
+    }
+    let text_len = non_ws_units + word_count.saturating_sub(1);
+    if text_len > letter_count_threshold {
+        return Ok(None);
+    }
+    Ok(Some(images))
 }
 
-/// `EpubExtractor.isKepub`: any spine page containing an element with class koboSpan
+/// XML local name: `xhtml:body` -> `body`
+fn xml_local_name(name: &[u8]) -> &str {
+    let s = std::str::from_utf8(name).unwrap_or("");
+    s.rsplit(':').next().unwrap_or(s)
+}
+
+/// One character chunk of body text, in jsoup `body().text()` semantics: non-whitespace
+/// UTF-16 units accumulate, and each whitespace run that closes a word counts as the
+/// single normalized space jsoup would insert between words.
+fn add_body_text(
+    chunk: &[u8],
+    in_word: &mut bool,
+    word_count: &mut usize,
+    non_ws_units: &mut usize,
+) {
+    for c in std::str::from_utf8(chunk).unwrap_or("").chars() {
+        if c.is_whitespace() {
+            if *in_word {
+                *word_count += 1;
+                *in_word = false;
+            }
+        } else {
+            *in_word = true;
+            *non_ws_units += c.len_utf16();
+        }
+    }
+}
+
+/// XML-unescaped attribute value (`&amp;` -> `&`), raw bytes on unescape failure.
+fn attr_value(attr: &quick_xml::events::attributes::Attribute<'_>) -> String {
+    std::str::from_utf8(&attr.value)
+        .ok()
+        .and_then(|raw| quick_xml::escape::unescape(raw).ok())
+        .map(|cow| cow.into_owned())
+        .unwrap_or_else(|| String::from_utf8_lossy(&attr.value).into_owned())
+}
+
+/// Push the value of the exact-named attribute (e.g. `src` on `img`) into `images`.
+fn push_image_attr<'a>(
+    attrs: impl Iterator<Item = quick_xml::events::attributes::Attribute<'a>>,
+    key: &'static [u8],
+    page_path: &str,
+    images: &mut Vec<String>,
+) {
+    for attr in attrs {
+        if attr.key.as_ref() == key {
+            images.push(resolve_relative(
+                page_path,
+                &percent_decode(&attr_value(&attr)),
+            ));
+        }
+    }
+}
+
+/// Push `href` or namespaced `xlink:href` values into `images` (svg:image).
+fn push_image_href<'a>(
+    attrs: impl Iterator<Item = quick_xml::events::attributes::Attribute<'a>>,
+    page_path: &str,
+    images: &mut Vec<String>,
+) {
+    for attr in attrs {
+        let key = attr.key.as_ref();
+        if key == b"href" || key.ends_with(b":href") {
+            images.push(resolve_relative(
+                page_path,
+                &percent_decode(&attr_value(&attr)),
+            ));
+        }
+    }
+}
+
+/// `EpubExtractor.isKepub`: any spine page whose class list contains the koboSpan token.
+/// A cheap byte pre-filter skips most pages; hits then reuse the same class-token check as
+/// `scan_kobo_spans` (no full HTML parse, and no false positives from stylesheets,
+/// `koboSpan2` classes or prose mentions).
 fn is_kepub(pkg: &mut EpubPackage, resources: &[MediaFile]) -> bool {
-    let selector = scraper::Selector::parse(".koboSpan").expect("valid selector");
     for file in resources
         .iter()
         .filter(|r| r.sub_type == Some(MediaFileSubType::EpubPage))
     {
-        let Some(content) = pkg.read_entry_string(&file.file_name) else {
+        let Some(content) = pkg.read_entry_bytes(&file.file_name) else {
             continue;
         };
-        let doc = scraper::Html::parse_document(&content);
-        if doc.select(&selector).next().is_some() {
+        if contains_kobo_span_class(&content) {
             return true;
         }
+    }
+    false
+}
+
+/// Precise koboSpan detection: element `class` attribute whose whitespace-separated token
+/// list contains `koboSpan` (same rule as `scan_kobo_spans`), over all elements.
+fn contains_kobo_span_class(content: &[u8]) -> bool {
+    if find_subslice(content, b"koboSpan", 0).is_none() {
+        return false;
+    }
+    let html = String::from_utf8_lossy(content);
+    let hay = html.as_bytes();
+    let mut search_from = 0;
+    while let Some(start) = find_subslice(hay, b"<", search_from) {
+        let Some(tag_end) = find_subslice(hay, b">", start) else {
+            break;
+        };
+        let tag = &html[start..=tag_end];
+        if extract_attr(tag, "class")
+            .map(|c| c.split_whitespace().any(|c| c == "koboSpan"))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+        search_from = tag_end + 1;
     }
     false
 }
