@@ -42,6 +42,10 @@ const MYLAR_SERIES_JSON: &str = "series.json";
 pub struct ScanResult {
     pub series: Vec<(Series, Vec<Book>)>,
     pub sidecars: Vec<Sidecar>,
+    /// Absolute paths of directories (or entries) whose contents could not be fully read
+    /// during traversal (e.g. a transient WebDAV/network mount hiccup). Rows located under
+    /// these paths must NOT be treated as missing/deleted: we simply do not know their state.
+    pub failed_directories: Vec<PathBuf>,
 }
 
 /// `Sidecar.kt`: a sidecar file matched by a consumer.
@@ -207,6 +211,7 @@ impl Scanner {
             book_consumers: &self.book_consumers,
             series_consumers: &self.series_consumers,
             result: ScanResult::default(),
+            failed_directories: Vec::new(),
         };
         let mut ancestors = Vec::new();
         walk_dir(&mut ctx, root, &mut ancestors);
@@ -221,6 +226,13 @@ impl Scanner {
                 .sum::<usize>(),
             ctx.result.sidecars.len()
         );
+        if !ctx.failed_directories.is_empty() {
+            tracing::warn!(
+                failed_directories = ctx.failed_directories.len(),
+                "scan: some directories could not be read; their contents are treated as unknown"
+            );
+        }
+        ctx.result.failed_directories = ctx.failed_directories;
         Ok(ctx.result)
     }
 
@@ -289,6 +301,7 @@ struct WalkContext<'a> {
     book_consumers: &'a [SidecarBookConsumer],
     series_consumers: &'a [SidecarSeriesConsumer],
     result: ScanResult,
+    failed_directories: Vec<PathBuf>,
 }
 
 fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
@@ -316,6 +329,7 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
         Ok(m) => m,
         Err(_) => {
             tracing::warn!("Could not access: {}", dir.display());
+            ctx.failed_directories.push(dir.to_path_buf());
             return;
         }
     };
@@ -346,6 +360,9 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
         Ok(rd) => rd,
         Err(_) => {
             tracing::warn!("Could not access: {}", dir.display());
+            // The directory is unreachable: record it so its contents are treated as
+            // "unknown" instead of "missing", and keep scanning the rest of the library.
+            ctx.failed_directories.push(dir.to_path_buf());
             ancestors.pop();
             return;
         }
@@ -356,6 +373,9 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
             Ok(e) => e,
             Err(_) => {
                 tracing::warn!("Could not access an entry of: {}", dir.display());
+                // Reading this entry failed: the directory contents are incomplete, so
+                // protect the whole directory from being treated as missing.
+                ctx.failed_directories.push(dir.to_path_buf());
                 continue;
             }
         };
@@ -364,6 +384,8 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
             Ok(m) => m,
             Err(_) => {
                 tracing::warn!("Could not access: {}", path.display());
+                // This entry's type is unknown: protect this exact path.
+                ctx.failed_directories.push(path.clone());
                 continue;
             }
         };
@@ -385,6 +407,8 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
             Ok(m) => m,
             Err(_) => {
                 tracing::warn!("Could not access: {}", path.display());
+                // The file's state is unknown: protect this exact path.
+                ctx.failed_directories.push(path.clone());
                 continue;
             }
         };
@@ -1022,5 +1046,53 @@ mod tests {
         assert_eq!(commons_get_base_name(".foo.bar"), ".foo");
         assert_eq!(commons_get_base_name("foo."), "foo");
         assert_eq!(commons_get_base_name("foo.bar.jpg"), "foo.bar");
+    }
+
+    #[test]
+    fn healthy_scan_reports_no_failed_directories() {
+        let (_tmp, root) = test_root();
+        let dir = root.join("s8");
+        create_dir_all(&dir).unwrap();
+        touch(&dir, "v01.cbz");
+
+        let result = Scanner::new()
+            .scan_root_folder(&root, &ScanOptions::default())
+            .unwrap();
+        assert_eq!(result.series.len(), 1);
+        assert!(
+            result.failed_directories.is_empty(),
+            "a healthy scan must not report failed directories: {:?}",
+            result.failed_directories
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_directory_is_recorded_as_failed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_tmp, root) = test_root();
+        let bad = root.join("bad");
+        create_dir_all(&bad).unwrap();
+        touch(&bad, "v01.cbz");
+        let ok = root.join("ok");
+        create_dir_all(&ok).unwrap();
+        touch(&ok, "v01.cbz");
+
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = Scanner::new()
+            .scan_root_folder(&root, &ScanOptions::default())
+            .unwrap();
+        // restore permissions so tempdir cleanup can remove the fixture
+        std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(
+            result.failed_directories.iter().any(|p| p == &bad),
+            "unreadable directory must be recorded as failed: {:?}",
+            result.failed_directories
+        );
+        // the rest of the library is still scanned
+        assert_eq!(result.series.len(), 1);
+        assert_eq!(result.series[0].0.name, "ok");
     }
 }

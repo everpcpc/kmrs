@@ -22,7 +22,7 @@ use komga_db::dao::sidecar::SidecarDao;
 use komga_db::dao::thumbnail::{ThumbnailBookDao, ThumbnailSeriesDao};
 use komga_db::Result;
 use komga_media::hash::compute_hash;
-use komga_media::scanner::{ScanError, ScanOptions, Scanner};
+use komga_media::scanner::{path_to_url, ScanError, ScanOptions, Scanner};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -72,6 +72,22 @@ pub fn scan_root_folder(
         let _ = state.events.send(DomainEvent::LibraryUpdated(updated));
     }
 
+    // Directories that could not be fully read during traversal: rows under them are in an
+    // unknown state (the files may still exist), so they must be excluded from the "missing"
+    // set below — a transient read failure (WebDAV/network mount hiccup) must never
+    // soft-delete real books/series. The next scan re-reads those directories.
+    let failed_directory_urls: Vec<String> = scan_result
+        .failed_directories
+        .iter()
+        .map(|p| path_to_url(p))
+        .collect();
+    if !failed_directory_urls.is_empty() {
+        tracing::warn!(
+            library_id = %library.id,
+            failed_directories = failed_directory_urls.len(),
+            "scan: treating rows under failed directories as unknown (excluded from deletion)"
+        );
+    }
     let scanned_series: Vec<(Series, Vec<Book>)> = scan_result
         .series
         .into_iter()
@@ -95,13 +111,26 @@ pub fn scan_root_folder(
     let series_dao = SeriesDao::new(state.db.clone());
     // delete series that don't exist anymore
     if scanned_series.is_empty() {
-        tracing::info!("Scan returned no series, soft deleting all existing series");
-        let existing = series_dao.find_by_library_id(&library.id)?;
-        crate::service::series::soft_delete_many(state, &existing)?;
+        if failed_directory_urls.is_empty() {
+            tracing::info!("Scan returned no series, soft deleting all existing series");
+            let existing = series_dao.find_by_library_id(&library.id)?;
+            crate::service::series::soft_delete_many(state, &existing)?;
+        } else {
+            // The scan read nothing but some directories failed: the library may not be
+            // empty, so keep the existing rows untouched.
+            tracing::warn!(
+                "Scan returned no series but {} directories failed to read; skipping full soft-delete",
+                failed_directory_urls.len()
+            );
+        }
     } else {
         let urls: Vec<String> = scanned_series.iter().map(|(s, _)| s.url.clone()).collect();
         let gone =
             series_dao.find_all_not_deleted_by_library_id_and_url_not_in(&library.id, &urls)?;
+        let gone: Vec<Series> = gone
+            .into_iter()
+            .filter(|s| !is_protected_url(&s.url, &failed_directory_urls))
+            .collect();
         if !gone.is_empty() {
             tracing::info!("Soft deleting series not on disk anymore: {gone:?}");
             crate::service::series::soft_delete_many(state, &gone)?;
@@ -116,6 +145,10 @@ pub fn scan_root_folder(
         .collect();
     let gone_books =
         book_dao.find_all_not_deleted_by_library_id_and_url_not_in(&library.id, &book_urls)?;
+    let gone_books: Vec<Book> = gone_books
+        .into_iter()
+        .filter(|b| !is_protected_url(&b.url, &failed_directory_urls))
+        .collect();
     let mut series_to_sort_and_refresh: Vec<Series> = vec![];
     if !gone_books.is_empty() {
         tracing::info!("Soft deleting books not on disk anymore: {gone_books:?}");
@@ -334,6 +367,24 @@ pub fn scan_root_folder(
     Ok(())
 }
 
+/// URL-component-aware prefix check: is `url` at or below `ancestor`?
+///
+/// URLs are produced by `path_to_url` (percent-encoded, path components separated by `/`),
+/// so a plain byte prefix could wrongly match a sibling like `seriesAB` under `seriesA`.
+/// The comparison is case-insensitive to absorb Windows path-case differences; being
+/// conservative here only delays a deletion to the next clean scan, it never deletes.
+fn is_protected_url(url: &str, failed_directory_urls: &[String]) -> bool {
+    let url = url.to_ascii_lowercase();
+    failed_directory_urls.iter().any(|ancestor| {
+        let ancestor = ancestor.to_ascii_lowercase();
+        url == ancestor
+            || url.strip_prefix(&ancestor).is_some_and(|rest| {
+                // `seriesA/v01.cbz` under `seriesA` (no trailing slash) leaves "/v01.cbz";
+                // a failed directory URL ends with "/", so any remainder is a descendant.
+                rest.starts_with('/') || ancestor.ends_with('/')
+            })
+    })
+}
 pub fn empty_trash(state: &AppState, library: &Library) -> Result<()> {
     tracing::info!("Empty trash for library: {library:?}");
     use komga_core::search::*;
@@ -722,6 +773,52 @@ mod tests {
 
     fn all_series(state: &AppState) -> Vec<Series> {
         SeriesDao::new(state.db.clone()).find_all().unwrap()
+    }
+
+    #[test]
+    fn protected_url_matches_ancestor_and_descendants_only() {
+        let failed = "file:/comics/base/seriesA".to_string();
+        let urls = vec![failed];
+
+        // the failed directory itself
+        assert!(is_protected_url("file:/comics/base/seriesA", &urls));
+        // a book directly under it
+        assert!(is_protected_url("file:/comics/base/seriesA/v01.cbz", &urls));
+        // a nested subdirectory
+        assert!(is_protected_url(
+            "file:/comics/base/seriesA/sub/v01.cbz",
+            &urls
+        ));
+        // case-insensitive (Windows path-case safety)
+        assert!(is_protected_url("FILE:/COMICS/BASE/SERIESA/V01.CBZ", &urls));
+        // sibling directories must NOT be protected (component-aware prefix)
+        assert!(!is_protected_url(
+            "file:/comics/base/seriesAB/v01.cbz",
+            &urls
+        ));
+        assert!(!is_protected_url(
+            "file:/comics/base/seriesA2/v01.cbz",
+            &urls
+        ));
+        // unrelated paths must not be protected
+        assert!(!is_protected_url("file:/comics/other/v01.cbz", &urls));
+
+        // a failed directory URL carries a trailing slash (it is a real directory):
+        // any remainder after the ancestor is a descendant, siblings stay unprotected
+        let dir_urls = vec!["file:/comics/base/seriesA/".to_string()];
+        assert!(is_protected_url("file:/comics/base/seriesA/", &dir_urls));
+        assert!(is_protected_url(
+            "file:/comics/base/seriesA/v01.cbz",
+            &dir_urls
+        ));
+        assert!(is_protected_url(
+            "file:/comics/base/seriesA/sub/v01.cbz",
+            &dir_urls
+        ));
+        assert!(!is_protected_url(
+            "file:/comics/base/seriesAB/v01.cbz",
+            &dir_urls
+        ));
     }
 
     #[test]
