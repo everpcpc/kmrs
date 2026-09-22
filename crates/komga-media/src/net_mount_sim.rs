@@ -21,6 +21,10 @@ const PAGES: usize = 150;
 #[derive(Default, Clone, Copy)]
 struct Stats {
     reads: usize,
+    /// reads issued right after the file position changed — each one is a fresh range
+    /// request on a network mount; sequential reads are served from the mount's readahead
+    scattered: usize,
+    /// real position changes (no-op `stream_position` calls excluded)
     seeks: usize,
     bytes: usize,
 }
@@ -33,6 +37,8 @@ impl Stats {
 
 struct AccountedFile {
     inner: std::fs::File,
+    pos: u64,
+    last_read_end: u64,
     stats: Rc<RefCell<Stats>>,
 }
 
@@ -42,20 +48,31 @@ impl Read for AccountedFile {
         let mut s = self.stats.borrow_mut();
         s.reads += 1;
         s.bytes += n;
+        if self.pos != self.last_read_end {
+            s.scattered += 1;
+        }
+        self.pos += n as u64;
+        self.last_read_end = self.pos;
         Ok(n)
     }
 }
 
 impl Seek for AccountedFile {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-        self.stats.borrow_mut().seeks += 1;
-        self.inner.seek(pos)
+        let new = self.inner.seek(pos)?;
+        if new != self.pos {
+            self.stats.borrow_mut().seeks += 1;
+        }
+        self.pos = new;
+        Ok(new)
     }
 }
 
 fn accounted(path: &Path, stats: &Rc<RefCell<Stats>>) -> AccountedFile {
     AccountedFile {
         inner: std::fs::File::open(path).unwrap(),
+        pos: 0,
+        last_read_end: 0,
         stats: stats.clone(),
     }
 }
@@ -179,15 +196,33 @@ fn analyze_new(path: &Path, stats: &Rc<RefCell<Stats>>) -> Vec<(String, Option<(
         .collect()
 }
 
+/// The cost of merely opening the archive (thumbnail/ComicInfo/barcode/page-hash tasks each
+/// pay this per invocation)
+fn open_only(path: &Path, stats: &Rc<RefCell<Stats>>) {
+    let file = accounted(path, stats);
+    let archive = zip::ZipArchive::new(file).unwrap();
+    assert_eq!(archive.len(), PAGES);
+}
+
+/// Poster-style access: open the archive and read a single entry out
+fn poster(path: &Path, stats: &Rc<RefCell<Stats>>) {
+    let file = accounted(path, stats);
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let mut entry = archive.by_name("p000.jpg").unwrap();
+    let mut buf = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut buf).unwrap();
+    assert_eq!(image::get_dimension(&buf), Some((1200, 900)));
+}
+
 fn report(label: &str, stats: &Stats, wall: Duration) {
     let mib = stats.bytes as f64 / (1 << 20) as f64;
     println!(
-        "{label:<26} reads={:>6} seeks={:>4} pulled={:>7.1} MiB wall={:>6.2}s | modeled: 0.5ms/op={:>6.1}s 2ms/op={:>7.1}s 50ms/op={:>8.1}s",
+        "{label:<26} reads={:>6} (scattered={:>5}) seeks={:>4} pulled={:>7.1} MiB wall={:>6.2}s | modeled: 2ms/op={:>6.1}s 50ms/op={:>7.1}s",
         stats.reads,
+        stats.scattered,
         stats.seeks,
         mib,
         wall.as_secs_f64(),
-        stats.ops() as f64 * 0.0005,
         stats.ops() as f64 * 0.002,
         stats.ops() as f64 * 0.05,
     );
@@ -252,8 +287,24 @@ fn net_mount_before_after() {
     });
     println!();
 
+    let (open_stats, _) = run("archive open only", &book, open_only);
+    run("poster (open + 1 entry)", &book, poster);
+    println!();
+
+    // default pipeline opens per book: media-type detect + analyze + thumbnail + ComicInfo
+    // + up to 6 barcode page tries (hashPages would add 6 more)
+    let opens = 10;
+    println!(
+        "default pipeline opens/book: {opens} x {} scattered reads = {} scattered | 2ms/op={:.1}s 50ms/op={:.1}s\n",
+        open_stats.scattered,
+        opens * open_stats.scattered,
+        opens as f64 * open_stats.scattered as f64 * 0.002,
+        opens as f64 * open_stats.scattered as f64 * 0.05,
+    );
+
     let pipeline = |a: &Stats, h: &Stats| Stats {
         reads: a.reads + h.reads,
+        scattered: a.scattered + h.scattered,
         seeks: a.seeks + h.seeks,
         bytes: a.bytes + h.bytes,
     };
@@ -263,10 +314,10 @@ fn net_mount_before_after() {
         ("NEW", pipeline(&analyze_new_stats, &hash_new_stats)),
     ] {
         println!(
-            "  {label}: {} ops, {:.1} MiB pulled | 0.5ms/op={:.1}s 2ms/op={:.1}s 50ms/op={:.1}s",
+            "  {label}: {} ops ({} scattered), {:.1} MiB pulled | 2ms/op={:.1}s 50ms/op={:.1}s",
             stats.ops(),
+            stats.scattered,
             stats.bytes as f64 / (1 << 20) as f64,
-            stats.ops() as f64 * 0.0005,
             stats.ops() as f64 * 0.002,
             stats.ops() as f64 * 0.05,
         );
