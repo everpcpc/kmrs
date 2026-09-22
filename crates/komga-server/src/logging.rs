@@ -43,7 +43,7 @@ pub fn init(logs_dir: &Path) -> Option<WorkerGuard> {
 fn rolling_appender(logs_dir: &Path) -> Result<RollingFileAppender, InitError> {
     tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .filename_prefix("komga")
+        .filename_prefix("kmrs")
         .filename_suffix("log")
         .max_log_files(7)
         .build(logs_dir)
@@ -55,7 +55,7 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn rolling_appender_writes_dated_komga_log() {
+    fn rolling_appender_writes_dated_kmrs_log() {
         let dir = tempfile::tempdir().unwrap();
         let appender = rolling_appender(dir.path()).unwrap();
         let (mut writer, guard) = tracing_appender::non_blocking(appender);
@@ -69,7 +69,7 @@ mod tests {
             .collect();
         assert_eq!(files.len(), 1, "expected a single log file, got {files:?}");
         assert!(
-            files[0].starts_with("komga.") && files[0].ends_with(".log"),
+            files[0].starts_with("kmrs.") && files[0].ends_with(".log"),
             "unexpected log file name: {}",
             files[0]
         );

@@ -1037,7 +1037,7 @@ async fn get_logfile(
     Ok(response)
 }
 
-// Daily-rotated names (`komga.YYYY-MM-DD.log`) sort by date, so the lexicographic
+// Daily-rotated names (`kmrs.YYYY-MM-DD.log`) sort by date, so the lexicographic
 // max is the file currently being written.
 fn latest_log_file(logs_dir: &std::path::Path) -> Option<std::path::PathBuf> {
     std::fs::read_dir(logs_dir)
@@ -1045,7 +1045,7 @@ fn latest_log_file(logs_dir: &std::path::Path) -> Option<std::path::PathBuf> {
         .filter_map(Result::ok)
         .map(|entry| entry.file_name())
         .filter_map(|name| name.into_string().ok())
-        .filter(|name| name.starts_with("komga.") && name.ends_with(".log"))
+        .filter(|name| name.starts_with("kmrs.") && name.ends_with(".log"))
         .max()
         .map(|name| logs_dir.join(name))
 }
@@ -1352,8 +1352,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let logs = dir.path().join("logs");
         std::fs::create_dir_all(&logs).unwrap();
-        std::fs::write(logs.join("komga.2026-09-21.log"), "old log").unwrap();
-        std::fs::write(logs.join("komga.2026-09-22.log"), "current log").unwrap();
+        std::fs::write(logs.join("kmrs.2026-09-21.log"), "old log").unwrap();
+        std::fs::write(logs.join("kmrs.2026-09-22.log"), "current log").unwrap();
         std::fs::write(logs.join("unrelated.txt"), "noise").unwrap();
         let mut config = (*state.config).clone();
         config.config_dir = dir.path().to_path_buf();
