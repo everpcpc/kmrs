@@ -1892,6 +1892,40 @@ mod tests {
     }
 
     #[test]
+    fn on_deck_paged_total_exceeds_page_size() {
+        let db = base_db();
+        let conn = db.rw();
+        insert_series(&conn, "s4", "l1", 2, false);
+        insert_series_metadata(&conn, "s4", "Delta", "P1", None);
+        insert_book(&conn, "b7", "s4", "l1", 50, "h4", false, false);
+        insert_book(&conn, "b8", "s4", "l1", 60, "h5", false, false);
+        insert_media(&conn, "b7", "READY", "application/zip", 1);
+        insert_media(&conn, "b8", "READY", "application/zip", 1);
+        insert_book_metadata(&conn, "b7", "Book Seven", 1.0, None);
+        insert_book_metadata(&conn, "b8", "Book Eight", 2.0, None);
+        insert_read_progress(&conn, "b7", "u1", 1, true);
+        insert_read_progress_series(&conn, "s4", "u1", 1, 0, Some("2022-01-01 00:00:00.0"));
+        drop(conn);
+
+        let paged = |page: u32| PageRequest {
+            page,
+            size: 1,
+            unpaged: false,
+            sort: vec![],
+        };
+        let d = dao(&db);
+        let none = ContentRestrictions::default();
+        // two on-deck series, one book per page: total must reflect the full
+        // filtered result, not the page size
+        let first = d.find_all_on_deck("u1", None, &none, &paged(0)).unwrap();
+        assert_eq!(first.total, 2);
+        assert_eq!(ids(&first), ["b8"]);
+        let second = d.find_all_on_deck("u1", None, &none, &paged(1)).unwrap();
+        assert_eq!(second.total, 2);
+        assert_eq!(ids(&second), ["b5"]);
+    }
+
+    #[test]
     fn duplicates_grouped_by_hash_and_size() {
         let db = base_db();
         let mut page = unpaged();
