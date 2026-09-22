@@ -36,6 +36,7 @@ md5 = "0.7"
 sha2 = "0.10"
 bcrypt = "0.17"
 flate2 = "1"
+tar = "0.4"
 crc32fast = "1"
 # time
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
