@@ -304,6 +304,15 @@ struct WalkContext<'a> {
     failed_directories: Vec<PathBuf>,
 }
 
+/// Record a directory/entry that could not be read, deduplicated so the warn-log
+/// count reflects distinct paths (several failing entries under one directory must
+/// not inflate it).
+fn record_failed_directory(ctx: &mut WalkContext, path: &Path) {
+    if !ctx.failed_directories.iter().any(|p| p == path) {
+        ctx.failed_directories.push(path.to_path_buf());
+    }
+}
+
 fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
     // preVisitDirectory: dot-prefixed or excluded directories are skipped as a whole subtree
     let name = dir
@@ -329,7 +338,7 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
         Ok(m) => m,
         Err(_) => {
             tracing::warn!("Could not access: {}", dir.display());
-            ctx.failed_directories.push(dir.to_path_buf());
+            record_failed_directory(ctx, dir);
             return;
         }
     };
@@ -362,7 +371,7 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
             tracing::warn!("Could not access: {}", dir.display());
             // The directory is unreachable: record it so its contents are treated as
             // "unknown" instead of "missing", and keep scanning the rest of the library.
-            ctx.failed_directories.push(dir.to_path_buf());
+            record_failed_directory(ctx, dir);
             ancestors.pop();
             return;
         }
@@ -375,7 +384,7 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
                 tracing::warn!("Could not access an entry of: {}", dir.display());
                 // Reading this entry failed: the directory contents are incomplete, so
                 // protect the whole directory from being treated as missing.
-                ctx.failed_directories.push(dir.to_path_buf());
+                record_failed_directory(ctx, dir);
                 continue;
             }
         };
@@ -385,14 +394,23 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
             Err(_) => {
                 tracing::warn!("Could not access: {}", path.display());
                 // This entry's type is unknown: protect this exact path.
-                ctx.failed_directories.push(path.clone());
+                record_failed_directory(ctx, &path);
                 continue;
             }
         };
 
         if link_meta.file_type().is_symlink() {
-            if path.is_dir() {
-                walk_dir(ctx, &path, ancestors);
+            // path.is_dir() follows the link and returns false on any error, silently
+            // skipping a mount whose target is unreachable; match metadata instead so a
+            // transient hiccup protects the rows under the link rather than soft-deleting them
+            match std::fs::metadata(&path) {
+                Ok(m) if m.is_dir() => walk_dir(ctx, &path, ancestors),
+                Ok(_) => {} // symlink to a non-directory: ignored, as before
+                Err(_) => {
+                    tracing::warn!("Could not access: {}", path.display());
+                    // The symlink target is unreachable: its contents are unknown.
+                    record_failed_directory(ctx, &path);
+                }
             }
             continue;
         }
@@ -408,7 +426,7 @@ fn walk_dir(ctx: &mut WalkContext, dir: &Path, ancestors: &mut Vec<PathBuf>) {
             Err(_) => {
                 tracing::warn!("Could not access: {}", path.display());
                 // The file's state is unknown: protect this exact path.
-                ctx.failed_directories.push(path.clone());
+                record_failed_directory(ctx, &path);
                 continue;
             }
         };
@@ -1094,5 +1112,30 @@ mod tests {
         // the rest of the library is still scanned
         assert_eq!(result.series.len(), 1);
         assert_eq!(result.series[0].0.name, "ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreachable_symlink_is_recorded_as_failed() {
+        let (_tmp, root) = test_root();
+        let link = root.join("mount");
+        std::os::unix::fs::symlink(root.join("does-not-exist"), &link).unwrap();
+
+        let result = Scanner::new()
+            .scan_root_folder(&root, &ScanOptions::default())
+            .unwrap();
+        assert!(
+            result.failed_directories.iter().any(|p| p == &link),
+            "unreachable symlink target must be recorded as failed: {:?}",
+            result.failed_directories
+        );
+        // nothing else was indexed, and the failed link is reported exactly once
+        assert!(result.series.is_empty());
+        assert_eq!(
+            result.failed_directories.len(),
+            1,
+            "deduplicated failed paths: {:?}",
+            result.failed_directories
+        );
     }
 }

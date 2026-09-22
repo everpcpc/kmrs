@@ -349,6 +349,9 @@ pub fn scan_root_folder(
     let gone_urls: Vec<String> = existing_sidecars
         .iter()
         .filter(|s| !new_urls.contains(s.url.as_str()))
+        // a sidecar under a failed directory is in an unknown state: keep the row so the
+        // next clean scan re-saves it instead of hard-deleting it here
+        .filter(|s| !is_protected_url(&s.url, &failed_directory_urls))
         .map(|s| s.url.clone())
         .collect();
     if !gone_urls.is_empty() {
@@ -888,6 +891,48 @@ mod tests {
         assert!(task_ids
             .iter()
             .any(|id| id.starts_with("REFRESH_SERIES_LOCAL_ARTWORK_")));
+    }
+
+    /// Service-layer pin for the failed-directory protection: rows under a directory that
+    /// fails to read during a scan must NOT be soft-deleted (their state is unknown), and
+    /// sidecar rows under it must NOT be hard-deleted either.
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_directory_keeps_series_book_and_sidecar_rows() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let state = test_state();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = scan_root(&tmp);
+        let dir = root.join("berserk");
+        write_file(&dir, "v01.cbz", b"book-one");
+        write_file(&dir, "cover.jpg", b"cover");
+        let lib = library(&state.db, "lib1", &root);
+        scan(&state, &lib);
+
+        // sanity: the clean scan indexed the series, its book, and the artwork sidecar
+        assert_eq!(all_series(&state).len(), 1);
+        assert_eq!(all_books(&state).len(), 1);
+        assert_eq!(
+            SidecarDao::new(state.db.clone()).find_all().unwrap().len(),
+            1
+        );
+
+        // make the series directory unreadable and rescan: a transient read failure must
+        // not soft-delete the rows under it, nor hard-delete the sidecar
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&dir, perms).unwrap();
+        scan(&state, &lib);
+        // restore permissions so tempdir cleanup can remove the fixture
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(all_series(&state).iter().all(|s| s.deleted_date.is_none()));
+        assert!(all_books(&state).iter().all(|b| b.deleted_date.is_none()));
+        assert_eq!(
+            SidecarDao::new(state.db.clone()).find_all().unwrap().len(),
+            1
+        );
     }
 
     #[test]
