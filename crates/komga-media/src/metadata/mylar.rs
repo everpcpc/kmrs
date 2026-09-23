@@ -26,7 +26,10 @@ pub struct MylarMetadata {
     #[serde(default)]
     pub imprint: Option<String>,
     pub name: String,
-    #[serde(alias = "cid")]
+    /// Mylar3 writes `comicid` as a JSON number (`int(cid)`); Komga's Kotlin
+    /// port relies on Jackson's default numeric→string coercion. serde is strict,
+    /// so accept both numbers and strings to keep real series.json parseable.
+    #[serde(alias = "cid", deserialize_with = "de_string_or_int")]
     pub comicid: String,
     pub year: i32,
     #[serde(default)]
@@ -40,9 +43,112 @@ pub struct MylarMetadata {
     pub age_rating: Option<MylarAgeRating>,
     #[serde(alias = "ComicImage")]
     pub comic_image: String,
+    /// Lenient like Jackson: older Mylar builds or hand-written files may write
+    /// `total_issues` as a string ("41"), which strict serde would reject.
+    #[serde(deserialize_with = "de_i32_or_string")]
     pub total_issues: i32,
     pub publication_run: String,
     pub status: MylarStatus,
+}
+
+/// Jackson-style numeric→string coercion for a single field: `9527` → `"9527"`,
+/// a string passes through unchanged. A hand-written Visitor (instead of an
+/// untagged enum) so a malformed value fails with a precise message such as
+/// `invalid type: boolean `true`, expected a string or an integer for comicid`
+/// rather than the opaque "data did not match any variant of untagged enum".
+fn de_string_or_int<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct StringOrInt;
+
+    impl<'de> serde::de::Visitor<'de> for StringOrInt {
+        type Value = String;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a string or an integer for comicid")
+        }
+
+        fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(s.to_string())
+        }
+
+        fn visit_string<E>(self, s: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(s)
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(v.to_string())
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(StringOrInt)
+}
+
+/// Jackson-style string→number coercion for a single field: `"41"` → `41`,
+/// a number passes through unchanged. Hand-written Visitor for precise errors;
+/// out-of-range and non-numeric values are rejected with a descriptive message.
+fn de_i32_or_string<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct IntOrNumericString;
+
+    impl<'de> serde::de::Visitor<'de> for IntOrNumericString {
+        type Value = i32;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an integer or a numeric string for total_issues")
+        }
+
+        fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            s.trim()
+                .parse::<i32>()
+                .map_err(|_| E::custom(format!("total_issues is not a valid integer: {s:?}")))
+        }
+
+        fn visit_string<E>(self, s: String) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            self.visit_str(&s)
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            i32::try_from(v).map_err(|_| E::custom(format!("total_issues out of i32 range: {v}")))
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            i32::try_from(v).map_err(|_| E::custom(format!("total_issues out of i32 range: {v}")))
+        }
+    }
+
+    deserializer.deserialize_any(IntOrNumericString)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -284,6 +390,92 @@ mod tests {
             MylarAgeRating::Seventeen
         );
         assert!(serde_json::from_str::<MylarAgeRating>("\"MA 15+\"").is_err());
+    }
+
+    #[test]
+    fn real_world_mylar_file_parses() {
+        // Shape of a real series.json as written by mylar3 (v1.0.x) and the
+        // Bangumi export tool: top-level `version`, numeric `comicid`,
+        // `type: "comicSeries"`, plus extra fields (collects, authors, links,
+        // alternateTitles, tags, ...) that serde must ignore. A strict
+        // `comicid: String` rejected the whole file ("invalid type: integer").
+        let dir = std::env::temp_dir().join("kmrs-mylar-real");
+        std::fs::create_dir_all(&dir).unwrap();
+        write_series_json(
+            &dir,
+            r#"{"version":"1.0.1","metadata":{
+                "type":"comicSeries",
+                "publisher":"白泉社",
+                "imprint":null,
+                "name":"3月的狮子",
+                "comicid":9527,
+                "year":2008,
+                "description_text":"独自居住在东京旧市街的17岁职业将棋棋士·桐山零。",
+                "description_formatted":null,
+                "volume":null,
+                "booktype":"Print",
+                "age_rating":"15+",
+                "collects":null,
+                "comic_image":"",
+                "total_issues":0,
+                "publication_run":"",
+                "status":"Continuing",
+            }}"#,
+        );
+
+        let patch = provider().get_series_metadata(&dir, false).unwrap();
+        assert_eq!(patch.title.as_deref(), Some("3月的狮子"));
+        assert_eq!(patch.title_sort.as_deref(), Some("3月的狮子"));
+        assert_eq!(patch.status, Some(SeriesStatus::Ongoing));
+        assert_eq!(patch.publisher.as_deref(), Some("白泉社"));
+        assert_eq!(patch.age_rating, Some(15));
+        assert_eq!(
+            patch.summary.as_deref(),
+            Some("独自居住在东京旧市街的17岁职业将棋棋士·桐山零。"),
+            "descriptionFormatted is null: fall back to descriptionText"
+        );
+        assert_eq!(patch.total_book_count, None, "totalIssues == 0 is ignored");
+    }
+
+    #[test]
+    fn numeric_comicid_and_string_total_issues_coerce() {
+        let dir = std::env::temp_dir().join("kmrs-mylar-coerce");
+        std::fs::create_dir_all(&dir).unwrap();
+        // numeric comicid + string total_issues, both Jackson-coercible forms
+        let json = series_json(Some(1))
+            .replace("\"comicid\":\"12345\"", "\"comicid\":12345")
+            .replace("\"total_issues\":41", "\"total_issues\":\"41\"");
+        write_series_json(&dir, &json);
+
+        let patch = provider().get_series_metadata(&dir, false).unwrap();
+        assert_eq!(patch.title.as_deref(), Some("Berserk"));
+        assert_eq!(patch.total_book_count, Some(41));
+        assert_eq!(patch.publisher.as_deref(), Some("Hakusensha"));
+    }
+
+    #[test]
+    fn wrong_typed_values_reject_file() {
+        let dir = std::env::temp_dir().join("kmrs-mylar-wrong-type");
+        std::fs::create_dir_all(&dir).unwrap();
+        // comicid: a boolean is neither a string nor an integer
+        write_series_json(
+            &dir,
+            &series_json(Some(1)).replace("\"comicid\":\"12345\"", "\"comicid\":true"),
+        );
+        assert!(
+            provider().get_series_metadata(&dir, false).is_none(),
+            "wrong-typed comicid must reject the file"
+        );
+
+        // total_issues: a non-numeric string
+        write_series_json(
+            &dir,
+            &series_json(Some(1)).replace("\"total_issues\":41", "\"total_issues\":\"abc\""),
+        );
+        assert!(
+            provider().get_series_metadata(&dir, false).is_none(),
+            "non-numeric total_issues must reject the file"
+        );
     }
 
     #[test]
