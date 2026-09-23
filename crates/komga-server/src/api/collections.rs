@@ -1459,7 +1459,12 @@ pub(crate) mod tests {
         let (status, _, _) = call(
             &state,
             router(),
-            json_request("DELETE", "/api/v1/collections/c2", "restricted-admin-key", ""),
+            json_request(
+                "DELETE",
+                "/api/v1/collections/c2",
+                "restricted-admin-key",
+                "",
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);

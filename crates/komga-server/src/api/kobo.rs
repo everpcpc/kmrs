@@ -1155,20 +1155,21 @@ async fn get_book_file(
             // store the kepub file size, so it can be passed back during Kobo Sync
             match std::fs::metadata(&converted) {
                 Ok(meta) => {
-                    if let Err(e) =
-                        BookProjectionDao::new(state.db.clone()).save(&BookProjection {
-                            book_id: book.id.clone(),
-                            profile: KEPUB_DEFAULT.to_string(),
-                            file_size: meta.len() as i64,
-                            created_date: time_codec::now_utc(),
-                            last_modified_date: time_codec::now_utc(),
-                        })
-                    {
+                    if let Err(e) = BookProjectionDao::new(state.db.clone()).save(&BookProjection {
+                        book_id: book.id.clone(),
+                        profile: KEPUB_DEFAULT.to_string(),
+                        file_size: meta.len() as i64,
+                        created_date: time_codec::now_utc(),
+                        last_modified_date: time_codec::now_utc(),
+                    }) {
                         tracing::warn!("Could not store kepub file size for {}: {e}", book.id);
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Could not stat converted kepub {}: {e}", converted.display())
+                    tracing::warn!(
+                        "Could not stat converted kepub {}: {e}",
+                        converted.display()
+                    )
                 }
             }
             Some(converted)

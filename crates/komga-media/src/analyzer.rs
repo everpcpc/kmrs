@@ -1482,29 +1482,29 @@ fn compute_positions(
         .collect();
 
     let (kobo_positions, kepub_file_size): (KoboSpans, Option<u64>) = if is_fixed_layout {
-            (HashMap::new(), None)
-        } else if is_kepub {
-            (
-                compute_positions_from_kobo_span(&reading_order, &mut |name| {
-                    pkg.read_entry_string(name)
-                })?,
-                None,
-            )
-        } else if let Some(kepubify_path) = kepubify_path {
-            let (spans, size) = positions_via_kepubify(kepubify_path, book_path, &reading_order);
-            (
-                spans.unwrap_or_else(|| {
-                    tracing::warn!(
-                        "Could not convert to Kepub to compute positions: {}",
-                        book_path.display()
-                    );
-                    HashMap::new()
-                }),
-                size,
-            )
-        } else {
-            (HashMap::new(), None)
-        };
+        (HashMap::new(), None)
+    } else if is_kepub {
+        (
+            compute_positions_from_kobo_span(&reading_order, &mut |name| {
+                pkg.read_entry_string(name)
+            })?,
+            None,
+        )
+    } else if let Some(kepubify_path) = kepubify_path {
+        let (spans, size) = positions_via_kepubify(kepubify_path, book_path, &reading_order);
+        (
+            spans.unwrap_or_else(|| {
+                tracing::warn!(
+                    "Could not convert to Kepub to compute positions: {}",
+                    book_path.display()
+                );
+                HashMap::new()
+            }),
+            size,
+        )
+    } else {
+        (HashMap::new(), None)
+    };
 
     let mut start_position = 1i32;
     let mut positions: Vec<R2Locator> = vec![];

@@ -50,9 +50,8 @@ impl KoboDtoDao {
         if book_ids.is_empty() {
             return Ok(vec![]);
         }
-        let projections =
-            crate::dao::book_projection::BookProjectionDao::new(self.db.clone())
-                .find_by_book_ids(book_ids)?;
+        let projections = crate::dao::book_projection::BookProjectionDao::new(self.db.clone())
+            .find_by_book_ids(book_ids)?;
         let mut sizes_by_book: HashMap<String, BTreeMap<String, i64>> = HashMap::new();
         for p in projections {
             sizes_by_book

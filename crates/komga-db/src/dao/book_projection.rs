@@ -154,7 +154,10 @@ mod tests {
         assert_eq!(kepub.file_size, 999);
 
         dao.delete("b1").unwrap();
-        assert!(dao.find_by_book_ids(&["b1".to_string()]).unwrap().is_empty());
+        assert!(dao
+            .find_by_book_ids(&["b1".to_string()])
+            .unwrap()
+            .is_empty());
         assert_eq!(
             dao.find_by_book_ids(&["b1".to_string(), "b2".to_string()])
                 .unwrap()
