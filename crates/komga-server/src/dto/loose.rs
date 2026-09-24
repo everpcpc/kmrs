@@ -16,13 +16,14 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// Parse a JSON value as a boolean, tolerating string representations
-/// ("true"/"false", case-insensitive); "1"/"0" stay rejected, matching the Kotlin backend.
+/// ("true"/"false"/"1"/"0", case-insensitive); deliberately more lenient than
+/// the Kotlin backend, which rejects "1"/"0".
 fn loose_bool(value: &Value) -> Option<bool> {
     match value {
         Value::Bool(boolean) => Some(*boolean),
         Value::String(string) => match string.trim().to_ascii_lowercase().as_str() {
-            "true" => Some(true),
-            "false" => Some(false),
+            "true" | "1" => Some(true),
+            "false" | "0" => Some(false),
             _ => None,
         },
         _ => None,
@@ -58,7 +59,8 @@ fn loose_f64(value: &Value) -> Option<f64> {
     parsed.filter(|value| value.is_finite())
 }
 
-/// `Option<bool>` field: JSON bool or "true"/"false" strings; null → None.
+/// `Option<bool>` field: JSON bool or "true"/"false"/"1"/"0" strings; null → None.
+/// The error message recommends the canonical "true"/"false" forms only.
 pub fn loose_bool_opt<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -192,6 +194,12 @@ mod tests {
         assert_eq!(s.ratio, Some(2.0));
         assert_eq!(s.age, Some(Some(12)));
         assert_eq!(s.port, Some(Some(17878)));
+
+        // "1"/"0" are accepted by deliberate choice
+        let s: Sample = serde_json::from_str(r#"{"flag":"1"}"#).unwrap();
+        assert_eq!(s.flag, Some(true));
+        let s: Sample = serde_json::from_str(r#"{"flag":"0"}"#).unwrap();
+        assert_eq!(s.flag, Some(false));
     }
 
     #[test]
@@ -209,8 +217,6 @@ mod tests {
     fn rejects_invalid_values() {
         assert!(serde_json::from_str::<Sample>(r#"{"count":"abc"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"flag":"yes"}"#).is_err());
-        // "1"/"0" are rejected, matching the Kotlin backend
-        assert!(serde_json::from_str::<Sample>(r#"{"flag":"1"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"ratio":"NaN"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"age":"3000000000"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"port":"70000"}"#).is_err());
