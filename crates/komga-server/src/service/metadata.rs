@@ -585,11 +585,6 @@ fn supports_epub(media_type: &str) -> bool {
     matches!(media_type, komga_media::detect::APPLICATION_EPUB)
 }
 
-/// Persists the series metadata contribution of one book: a missing or unparsable
-/// document is stored as ABSENT, while an entry that is listed but unreadable (e.g. a
-/// transient I/O error) is left without a row so the next refresh retries it. A parsed
-/// document always stores a PRESENT payload (empty fields stay empty). Gated on the
-/// library import switches of the corresponding provider.
 /// Serializes the PRESENT payload for a parsed ComicInfo document.
 fn comicinfo_present_contribution(
     library: &Library,
@@ -608,6 +603,11 @@ fn comicinfo_present_contribution(
     Ok(("PRESENT", Some(payload)))
 }
 
+/// Persists the series metadata contribution of one book: a missing or unparsable
+/// document is stored as ABSENT, while an entry that is listed but unreadable (e.g. a
+/// transient I/O error) is left without a row so the next refresh retries it. A parsed
+/// document always stores a PRESENT payload (empty fields stay empty). Gated on the
+/// library import switches of the corresponding provider.
 fn upsert_series_metadata_contributions(
     state: &AppState,
     book: &Book,
