@@ -234,7 +234,7 @@ impl<'a> Migrator<'a> {
 
         let history_existed = table_exists(conn, "flyway_schema_history")?;
         // An empty history table counts as no history: a leftover empty table
-        // from a failed (pre-transactional) adoption must not brick the database
+        // from a crashed or interrupted adoption must not brick the database
         // by skipping adoption and then failing out-of-order; re-adopt instead.
         let history_is_empty = !history_existed
             || conn.query_row("SELECT COUNT(*) FROM flyway_schema_history", [], |r| {
@@ -432,6 +432,20 @@ fn sqlx_counts_as_applied(version: u64, sqlx_versions: &[u64]) -> bool {
     sqlx_versions.contains(&version)
 }
 
+/// Logs every sqlx-recorded version kmrs does not know: adoption and
+/// absorption skip them, and silence would hide a komga-riir schema drift.
+fn warn_unknown_sqlx_versions(sqlx_versions: &[u64], local: &BTreeMap<u64, &Migration>) {
+    for version in sqlx_versions {
+        if !local.contains_key(version) {
+            tracing::warn!(
+                target: "komga_db::migrate",
+                version,
+                "komga-riir sqlx history records a version kmrs does not know; skipping"
+            );
+        }
+    }
+}
+
 /// Rebuilds `flyway_schema_history` from komga-riir's sqlx history
 /// (`_sqlx_migrations`), so an existing komga-riir database can be opened and
 /// upgraded like a Java komga one.
@@ -452,15 +466,7 @@ fn adopt_from_sqlx_history(
     if sqlx_versions.is_empty() {
         return Ok(false);
     }
-    for version in &sqlx_versions {
-        if !local.contains_key(version) {
-            tracing::warn!(
-                target: "komga_db::migrate",
-                version,
-                "komga-riir sqlx history records a version kmrs does not know; skipping"
-            );
-        }
-    }
+    warn_unknown_sqlx_versions(&sqlx_versions, local);
 
     // Create the history table inside the stamping transaction. SQLite DDL is
     // transactional, so a failed stamping run rolls the table back too and the
@@ -507,15 +513,7 @@ fn absorb_sqlx_versions(
     if sqlx_versions.is_empty() {
         return Ok(());
     }
-    for version in &sqlx_versions {
-        if !local.contains_key(version) {
-            tracing::warn!(
-                target: "komga_db::migrate",
-                version,
-                "komga-riir sqlx history records a version kmrs does not know; skipping"
-            );
-        }
-    }
+    warn_unknown_sqlx_versions(&sqlx_versions, local);
 
     let tx = conn.unchecked_transaction()?;
     let mut stamped = 0;

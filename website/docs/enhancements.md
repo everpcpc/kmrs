@@ -27,7 +27,6 @@ Improvements kmrs adds on top of Java parity, plus intentional behavior differen
 
 ## Behavior differences
 
-
 Intentional differences from the Java behavior:
 
 - Page order and series book numbering are case-sensitive; the Java natural comparator is case-insensitive.
