@@ -337,8 +337,8 @@ mod tests {
             "koboPort": "17878",
             "rememberMeDurationDays": "30",
             "deleteEmptyCollections": "true",
-            "deleteEmptyReadLists": "0",
-            "koboProxy": "1"
+            "deleteEmptyReadLists": "false",
+            "koboProxy": "true"
         });
         let (status, _, _) = call(
             &state,

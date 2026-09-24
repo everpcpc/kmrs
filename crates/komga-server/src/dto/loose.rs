@@ -16,13 +16,13 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// Parse a JSON value as a boolean, tolerating string representations
-/// ("true"/"false"/"1"/"0", case-insensitive).
+/// ("true"/"false", case-insensitive); "1"/"0" stay rejected, matching the Kotlin backend.
 fn loose_bool(value: &Value) -> Option<bool> {
     match value {
         Value::Bool(boolean) => Some(*boolean),
         Value::String(string) => match string.trim().to_ascii_lowercase().as_str() {
-            "true" | "1" => Some(true),
-            "false" | "0" => Some(false),
+            "true" => Some(true),
+            "false" => Some(false),
             _ => None,
         },
         _ => None,
@@ -48,7 +48,7 @@ fn loose_u16(value: &Value) -> Option<u16> {
 }
 
 /// Parse a JSON value as a finite floating point, tolerating numeric strings;
-/// NaN/Infinity are rejected like the Kotlin backend.
+/// non-finite values are rejected (stricter than the Kotlin backend, which accepts them).
 fn loose_f64(value: &Value) -> Option<f64> {
     let parsed = match value {
         Value::Number(number) => number.as_f64(),
@@ -58,7 +58,7 @@ fn loose_f64(value: &Value) -> Option<f64> {
     parsed.filter(|value| value.is_finite())
 }
 
-/// `Option<bool>` field: JSON bool or "true"/"false"/"1"/"0" strings; null → None.
+/// `Option<bool>` field: JSON bool or "true"/"false" strings; null → None.
 pub fn loose_bool_opt<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -82,6 +82,17 @@ where
             .map(Some)
             .ok_or_else(|| serde::de::Error::custom("expected an integer or a numeric string")),
     }
+}
+
+/// Required `i32` field: JSON integer or numeric string.
+pub fn loose_i32<'de, D>(deserializer: D) -> Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    loose_i64(&value)
+        .and_then(|v| i32::try_from(v).ok())
+        .ok_or_else(|| serde::de::Error::custom("expected an integer or a numeric string"))
 }
 
 /// `Option<f32>` field: JSON number or numeric string; null → None; non-finite → error.
@@ -198,6 +209,8 @@ mod tests {
     fn rejects_invalid_values() {
         assert!(serde_json::from_str::<Sample>(r#"{"count":"abc"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"flag":"yes"}"#).is_err());
+        // "1"/"0" are rejected, matching the Kotlin backend
+        assert!(serde_json::from_str::<Sample>(r#"{"flag":"1"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"ratio":"NaN"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"age":"3000000000"}"#).is_err());
         assert!(serde_json::from_str::<Sample>(r#"{"port":"70000"}"#).is_err());
