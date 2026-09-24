@@ -25,6 +25,7 @@ pub fn media_profile(media_type: Option<&str>) -> Option<MediaProfile> {
         | detect::APPLICATION_RAR_4
         | detect::APPLICATION_RAR_5 => MediaProfile::Divina,
         detect::APPLICATION_EPUB => MediaProfile::Epub,
+        detect::APPLICATION_MOBI => MediaProfile::Mobi,
         detect::APPLICATION_PDF => MediaProfile::Pdf,
         _ => return None,
     })
@@ -45,6 +46,9 @@ pub fn get_page_content(book_path: &Path, media: &Media, number: usize) -> Resul
             get_divina_entry(book_path, media, &media.pages[number - 1].file_name)
         }
         Some(MediaProfile::Pdf) => pdf::get_page_content_as_image(book_path, number),
+        Some(MediaProfile::Mobi) => {
+            get_mobi_resource_bytes(book_path, &media.pages[number - 1].file_name)
+        }
         Some(MediaProfile::Epub) => {
             if media.epub_divina_compatible {
                 zip::get_entry_bytes(book_path, &media.pages[number - 1].file_name)
@@ -97,6 +101,7 @@ pub fn get_pages_content(
             None => Err(MediaError::NotReady),
         },
         Some(MediaProfile::Pdf) => pdf::get_pages_content_as_images(book_path, numbers),
+        Some(MediaProfile::Mobi) => get_mobi_resources_bytes(book_path, &names),
         Some(MediaProfile::Epub) => {
             if media.epub_divina_compatible {
                 zip::get_entries_bytes(book_path, &names)
@@ -108,6 +113,34 @@ pub fn get_pages_content(
         }
         None => Err(MediaError::NotReady),
     }
+}
+
+/// Reads a resource out of a MOBI book by normalizing it on the fly (there is no physical
+/// container to open). Errors are mapped like the other extractors.
+fn get_mobi_resource_bytes(book_path: &Path, resource_name: &str) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(book_path).map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?;
+    let publication =
+        crate::mobi::normalize_mobi(&bytes).map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?;
+    publication
+        .resource_bytes(resource_name)
+        .map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?
+        .ok_or_else(|| MediaError::EntryNotFound(resource_name.to_string()))
+}
+
+/// Batch variant of [`get_mobi_resource_bytes`]: one normalization pass for the whole batch.
+fn get_mobi_resources_bytes(book_path: &Path, names: &[&str]) -> Result<Vec<Vec<u8>>> {
+    let bytes = std::fs::read(book_path).map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?;
+    let publication =
+        crate::mobi::normalize_mobi(&bytes).map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?;
+    names
+        .iter()
+        .map(|name| {
+            publication
+                .resource_bytes(name)
+                .map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?
+                .ok_or_else(|| MediaError::EntryNotFound((*name).to_string()))
+        })
+        .collect()
 }
 
 /// A book container opened once, with per-page reads on the same handle. Used where
@@ -137,6 +170,11 @@ enum PagesReaderKind {
     },
     Pdf {
         pages: pdf::PdfPages,
+    },
+    Mobi {
+        /// normalization happens once at open; per-page reads serve from it
+        publication: crate::mobi::NormalizedPublication,
+        names: HashMap<usize, String>,
     },
 }
 
@@ -186,6 +224,20 @@ impl PagesReader {
                 },
                 page_count,
             }),
+            Some(MediaProfile::Mobi) => {
+                let bytes =
+                    std::fs::read(book_path).map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?;
+                let publication = crate::mobi::normalize_mobi(&bytes)
+                    .map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?;
+                let names: HashMap<usize, String> = numbers
+                    .iter()
+                    .map(|&n| (n, media.pages[n - 1].file_name.clone()))
+                    .collect();
+                Ok(Self {
+                    kind: PagesReaderKind::Mobi { publication, names },
+                    page_count,
+                })
+            }
             Some(MediaProfile::Epub) => {
                 if media.epub_divina_compatible {
                     Self::zip(book_path, media, numbers, page_count)
@@ -233,6 +285,15 @@ impl PagesReader {
                 ))
             })?,
             PagesReaderKind::Pdf { pages } => pages.render(number),
+            PagesReaderKind::Mobi { publication, names } => {
+                let name = names.get(&number).ok_or_else(|| {
+                    MediaError::Other(anyhow::anyhow!("page {number} was not requested at open"))
+                })?;
+                publication
+                    .resource_bytes(name)
+                    .map_err(|e| MediaError::Other(anyhow::anyhow!(e)))?
+                    .ok_or_else(|| MediaError::EntryNotFound(name.clone()))
+            }
         }
     }
 }
@@ -264,6 +325,7 @@ pub fn get_file_content(book_path: &Path, media: &Media, file_name: &str) -> Res
     match media_profile(media.media_type.as_deref()) {
         Some(MediaProfile::Divina) => get_divina_entry(book_path, media, file_name),
         Some(MediaProfile::Epub) => zip::get_entry_bytes(book_path, file_name),
+        Some(MediaProfile::Mobi) => get_mobi_resource_bytes(book_path, file_name),
         _ => Err(MediaError::unsupported(
             "Extractor does not support extraction of files",
         )),

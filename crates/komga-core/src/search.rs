@@ -33,6 +33,8 @@ pub enum MediaProfile {
     Pdf,
     #[serde(rename = "EPUB")]
     Epub,
+    #[serde(rename = "MOBI")]
+    Mobi,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

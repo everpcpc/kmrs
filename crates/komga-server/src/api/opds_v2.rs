@@ -2283,6 +2283,9 @@ async fn get_webpub_manifest(
         Some(komga_core::search::MediaProfile::Epub) => {
             manifest_epub(&state, &auth.user, &parts, &book_id).await
         }
+        Some(komga_core::search::MediaProfile::Mobi) => {
+            manifest_epub(&state, &auth.user, &parts, &book_id).await
+        }
         None => Err(ApiError::not_found("Book analysis failed")),
     }
 }

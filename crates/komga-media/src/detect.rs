@@ -13,6 +13,7 @@ pub const APPLICATION_RAR_4: &str = "application/x-rar-compressed; version=4";
 pub const APPLICATION_RAR_5: &str = "application/x-rar-compressed; version=5";
 pub const APPLICATION_7Z: &str = "application/x-7z-compressed";
 pub const APPLICATION_PDF: &str = "application/pdf";
+pub const APPLICATION_MOBI: &str = "application/x-mobipocket-ebook";
 pub const APPLICATION_OCTET_STREAM: &str = "application/octet-stream";
 pub const IMAGE_JPEG: &str = "image/jpeg";
 pub const IMAGE_PNG: &str = "image/png";
@@ -39,6 +40,10 @@ pub fn detect_media_type(bytes: &[u8]) -> String {
     }
     if bytes.starts_with(b"%PDF-") {
         return APPLICATION_PDF.to_string();
+    }
+    // PalmDB / Mobipocket: "BOOKMOBI" sits at offset 60 of the PalmDB header
+    if bytes.len() >= 68 && &bytes[60..68] == b"BOOKMOBI" {
+        return APPLICATION_MOBI.to_string();
     }
     if bytes.starts_with(b"7z\xBC\xAF\x27\x1C") {
         return APPLICATION_7Z.to_string();
@@ -127,6 +132,7 @@ pub fn media_type_to_extension(media_type: &str) -> Option<&'static str> {
         APPLICATION_EPUB => ".epub",
         "application/x-rar-compressed" => ".rar",
         APPLICATION_PDF => ".pdf",
+        APPLICATION_MOBI => ".mobi",
         APPLICATION_7Z => ".7z",
         IMAGE_JPEG => ".jpg",
         IMAGE_PNG => ".png",
@@ -287,6 +293,16 @@ mod tests {
             Some(".epub")
         );
         assert_eq!(media_type_to_extension("application/unknown"), None);
+    }
+
+    #[test]
+    fn mobi_detection() {
+        // build a minimal PalmDB header with BOOKMOBI at offset 60
+        let mut bytes = vec![0u8; 68];
+        bytes[60..68].copy_from_slice(b"BOOKMOBI");
+        assert_eq!(detect_media_type(&bytes), APPLICATION_MOBI);
+        assert_eq!(detect_media_type(&bytes[..67]), APPLICATION_OCTET_STREAM);
+        assert_eq!(media_type_to_extension(APPLICATION_MOBI), Some(".mobi"));
     }
 
     #[test]

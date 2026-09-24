@@ -8,6 +8,7 @@ pub mod hash;
 pub mod image;
 pub mod kepubify;
 pub mod metadata;
+pub mod mobi;
 pub mod pdf;
 pub mod rar;
 pub mod scanner;

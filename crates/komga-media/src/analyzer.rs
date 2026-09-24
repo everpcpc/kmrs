@@ -215,6 +215,19 @@ impl Analyzer {
                     metadata_sources,
                 })
             }
+            Some(MediaProfile::Mobi) => {
+                let (media, extension, kepub_file_size) =
+                    self.analyze_mobi(book_path, &mut metadata_sources)?;
+                Ok(Analysis {
+                    media: Media {
+                        media_type: Some(media_type),
+                        ..media
+                    },
+                    epub_extension: Some(extension),
+                    kepub_file_size,
+                    metadata_sources,
+                })
+            }
             // media_profile returned Some above, so one of the profiles must match
             None => unreachable!(),
         }
@@ -432,6 +445,150 @@ impl Analyzer {
         };
         Ok((media, extension, kepub_file_size))
     }
+    /// `analyzeMobiMediaPages`: normalize a MOBI into an in-memory publication and expose its
+    /// chapters as pages, its resources as files, and a generated OPF as the metadata source
+    /// for later refreshes. MOBI has no physical container, so both the EPUB navigation
+    /// extension (positions/toc) and the OPF are derived from the normalized publication.
+    fn analyze_mobi(
+        &self,
+        book_path: &Path,
+        sources: &mut CapturedMetadataSources,
+    ) -> Result<(Media, MediaExtensionEpub, Option<u64>)> {
+        let bytes = std::fs::read(book_path).map_err(|e| MediaError::Other(e.into()))?;
+        let publication = match crate::mobi::normalize_mobi(&bytes) {
+            Ok(publication) => publication,
+            Err(error) => {
+                let media = Self::mobi_error_media(&error);
+                return Ok((
+                    media,
+                    MediaExtensionEpub {
+                        toc: vec![],
+                        landmarks: vec![],
+                        page_list: vec![],
+                        is_fixed_layout: false,
+                        positions: vec![],
+                    },
+                    None,
+                ));
+            }
+        };
+
+        // hand the generated OPF to the metadata refresh instead of re-opening the book
+        if let Ok(Some(opf)) = publication.resource_bytes("OEBPS/content.opf") {
+            sources.epub_opf = Some(opf);
+        }
+
+        let pages = publication
+            .chapters
+            .iter()
+            .map(|chapter| BookPage {
+                file_name: chapter.path.clone(),
+                media_type: "application/xhtml+xml".to_string(),
+                width: None,
+                height: None,
+                file_hash: String::new(),
+                file_size: None,
+            })
+            .collect::<Vec<_>>();
+
+        let mut files = vec![MediaFile {
+            file_name: "OEBPS/content.opf".to_string(),
+            media_type: Some("application/oebps-package+xml".to_string()),
+            sub_type: Some(MediaFileSubType::EpubAsset),
+            file_size: publication
+                .resource_bytes("OEBPS/content.opf")
+                .ok()
+                .flatten()
+                .map(|bytes| bytes.len() as i64),
+        }];
+        files.extend(publication.resources.iter().map(|resource| MediaFile {
+            file_name: resource.path.clone(),
+            media_type: Some(resource.media_type.clone()),
+            sub_type: Some(MediaFileSubType::EpubAsset),
+            file_size: Some(resource.bytes.len() as i64),
+        }));
+
+        // one position per estimated page, mirroring the EPUB extension of the derived book
+        let mut positions = Vec::new();
+        let mut position = 0_i32;
+        for (chapter, chapter_page_count) in publication
+            .chapters
+            .iter()
+            .zip(&publication.chapter_page_counts)
+        {
+            for page in 0..*chapter_page_count {
+                positions.push(R2Locator {
+                    href: chapter.path.clone(),
+                    type_: "application/xhtml+xml".to_string(),
+                    title: None,
+                    locations: Some(R2Location {
+                        fragments: vec![],
+                        progression: Some(page as f32 / (*chapter_page_count).max(1) as f32),
+                        position: Some(position + 1),
+                        total_progression: Some(
+                            position as f32 / publication.page_count.max(1) as f32,
+                        ),
+                    }),
+                    text: None,
+                    kobo_span: None,
+                });
+                position += 1;
+            }
+        }
+
+        let toc = publication
+            .chapters
+            .iter()
+            .map(|chapter| EpubTocEntry {
+                title: chapter.title.clone(),
+                href: Some(chapter.path.clone()),
+                children: vec![],
+            })
+            .collect::<Vec<_>>();
+
+        let extension = MediaExtensionEpub {
+            toc,
+            landmarks: vec![],
+            page_list: vec![],
+            is_fixed_layout: false,
+            positions,
+        };
+        let media = Media {
+            status: MediaStatus::Ready,
+            page_count: publication.page_count as i32,
+            pages,
+            files,
+            comment: None,
+            ..media(MediaStatus::Ready, None, None)
+        };
+        Ok((media, extension, None))
+    }
+
+    /// Maps a MOBI derivation failure onto the `Media` + ERR_MOBI_* comment contract.
+    fn mobi_error_media(error: &crate::mobi::MobiError) -> Media {
+        match error {
+            crate::mobi::MobiError::Unsupported(reason) => {
+                let comment = match reason {
+                    crate::mobi::MobiUnsupportedReason::Drm => "ERR_MOBI_UNSUPPORTED_DRM",
+                    crate::mobi::MobiUnsupportedReason::HufCompression => {
+                        "ERR_MOBI_UNSUPPORTED_COMPRESSION"
+                    }
+                    crate::mobi::MobiUnsupportedReason::Kf8 => "ERR_MOBI_UNSUPPORTED_KF8",
+                };
+                media(MediaStatus::Unsupported, None, Some(comment.to_string()))
+            }
+            crate::mobi::MobiError::Invalid(_) => media(
+                MediaStatus::Error,
+                None,
+                Some("ERR_MOBI_INVALID_CONTAINER".to_string()),
+            ),
+            _ => media(
+                MediaStatus::Error,
+                None,
+                Some("ERR_MOBI_DERIVATION_FAILED".to_string()),
+            ),
+        }
+    }
 
     /// `BookAnalyzer.generateThumbnail`
     pub fn generate_thumbnail(
@@ -487,6 +644,18 @@ impl Analyzer {
                     None
                 }
             }),
+            Some(MediaProfile::Mobi) => {
+                let bytes = std::fs::read(book_path).ok()?;
+                let publication = crate::mobi::normalize_mobi(&bytes).ok()?;
+                let cover = publication
+                    .resources
+                    .iter()
+                    .find(|resource| resource.path.contains("cover."))?;
+                Some(PageContent {
+                    bytes: cover.bytes.clone(),
+                    media_type: cover.media_type.clone(),
+                })
+            }
             None => None,
         }
     }
@@ -2694,6 +2863,104 @@ mod tests {
             "captured bytes should be the OPF document, got: {text:.120}"
         );
         assert!(analysis.metadata_sources.comicinfo.is_none());
+    }
+
+    #[test]
+    fn analyze_mobi_ready() {
+        let book = fixtures().join("mobi/epub3.mobi");
+        if !book.is_file() {
+            return;
+        }
+        let analysis = analyzer().analyze(&book, false);
+        let media = &analysis.media;
+        assert_eq!(media.status, MediaStatus::Ready);
+        assert_eq!(
+            media.media_type.as_deref(),
+            Some(crate::detect::APPLICATION_MOBI)
+        );
+        assert!(media.page_count > 0);
+        assert!(!media.pages.is_empty());
+        assert!(media
+            .pages
+            .iter()
+            .all(|p| p.media_type == "application/xhtml+xml"));
+        assert!(media
+            .files
+            .iter()
+            .any(|f| f.file_name == "OEBPS/content.opf"));
+        assert!(!media.epub_divina_compatible);
+        let extension = analysis
+            .epub_extension
+            .as_ref()
+            .expect("MOBI should produce an EPUB navigation extension");
+        assert!(!extension.toc.is_empty());
+        assert!(!extension.positions.is_empty());
+        assert!(!extension.is_fixed_layout);
+        let opf = analysis
+            .metadata_sources
+            .epub_opf
+            .as_deref()
+            .expect("MOBI should capture its generated OPF");
+        assert!(String::from_utf8_lossy(opf).contains("<package"));
+        assert!(analysis.metadata_sources.comicinfo.is_none());
+    }
+
+    #[test]
+    fn analyze_mobi_serves_chapter_pages_and_opf() {
+        let book = fixtures().join("mobi/epub3.mobi");
+        if !book.is_file() {
+            return;
+        }
+        let analysis = analyzer().analyze(&book, false);
+        let media = analysis.media;
+        let first = container::get_page_content(&book, &media, 1).expect("first page should read");
+        let text = String::from_utf8_lossy(&first);
+        assert!(text.contains("<html"));
+        let opf = container::get_file_content(&book, &media, "OEBPS/content.opf")
+            .expect("generated OPF should be readable as a file");
+        assert!(String::from_utf8_lossy(&opf).contains("<package"));
+    }
+
+    #[test]
+    fn analyze_mobi_invalid_container() {
+        let dir = tmpdir("mobi-invalid");
+        let book = dir.join("broken.mobi");
+        // BOOKMOBI identifier present but the PalmDB header is truncated -> invalid
+        let mut broken = vec![0u8; 68];
+        broken[60..68].copy_from_slice(b"BOOKMOBI");
+        std::fs::write(&book, broken).unwrap();
+        let media = analyzer().analyze(&book, false).media;
+        assert_eq!(media.status, MediaStatus::Error);
+        assert_eq!(media.comment.as_deref(), Some("ERR_MOBI_INVALID_CONTAINER"));
+    }
+
+    #[test]
+    fn analyze_mobi_rejects_kf8() {
+        let dir = tmpdir("mobi-kf8");
+        let book = dir.join("kf8.mobi");
+        std::fs::write(&book, mobi_kf8_bytes()).unwrap();
+        let media = analyzer().analyze(&book, false).media;
+        assert_eq!(media.status, MediaStatus::Unsupported);
+        assert_eq!(media.comment.as_deref(), Some("ERR_MOBI_UNSUPPORTED_KF8"));
+    }
+
+    fn mobi_kf8_bytes() -> Vec<u8> {
+        use iepub::prelude::{MobiBuilder, MobiHtml};
+        let mut cover = Vec::new();
+        ::image::codecs::jpeg::JpegEncoder::new(&mut cover)
+            .encode(&[255, 0, 0], 1, 1, ::image::ExtendedColorType::Rgb8)
+            .expect("fixture cover should be encoded");
+        let mut bytes = MobiBuilder::default()
+            .with_title("t")
+            .with_identifier("id")
+            .add_chapter(MobiHtml::new(1).with_data(b"<p>x</p>".to_vec()))
+            .cover(cover)
+            .mem()
+            .expect("fixture MOBI should be generated");
+        let record_offset = u32::from_be_bytes(bytes[78..82].try_into().unwrap()) as usize;
+        bytes[record_offset + 16 + 8..record_offset + 16 + 12]
+            .copy_from_slice(&0x0000_00f8_u32.to_be_bytes());
+        bytes
     }
 
     #[test]

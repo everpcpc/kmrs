@@ -181,10 +181,13 @@ impl BookMetadataProvider for EpubMetadataProvider {
         book_path: &Path,
         media: &Media,
     ) -> Option<BookMetadataPatch> {
-        if media.media_type.as_deref() != Some(EPUB_MEDIA_TYPE) {
+        if !matches!(
+            media.media_type.as_deref(),
+            Some(EPUB_MEDIA_TYPE) | Some(crate::detect::APPLICATION_MOBI)
+        ) {
             return None;
         }
-        let package_file = get_package_file_content(book_path)?;
+        let package_file = get_package_document(book_path, media.media_type.as_deref())?;
         book_patch_from_package(&package_file)
     }
 
@@ -194,17 +197,36 @@ impl BookMetadataProvider for EpubMetadataProvider {
         media: &Media,
         sources: Option<&crate::CapturedMetadataSources>,
     ) -> Option<BookMetadataPatch> {
-        if media.media_type.as_deref() != Some(EPUB_MEDIA_TYPE) {
+        if !matches!(
+            media.media_type.as_deref(),
+            Some(EPUB_MEDIA_TYPE) | Some(crate::detect::APPLICATION_MOBI)
+        ) {
             return None;
         }
         // reuse the OPF document captured during analysis when available, so the refresh
-        // does not re-open the book; fall back to the file otherwise
+        // does not re-open the book; fall back to the file otherwise (MOBI normalizes on
+        // the fly and serves its generated OPF)
         let package_file = match sources.and_then(|s| s.epub_opf.as_deref()) {
             Some(bytes) => std::borrow::Cow::Borrowed(std::str::from_utf8(bytes).ok()?),
-            None => std::borrow::Cow::Owned(get_package_file_content(book_path)?),
+            None => {
+                let package_file = get_package_document(book_path, media.media_type.as_deref())?;
+                std::borrow::Cow::Owned(package_file)
+            }
         };
         book_patch_from_package(&package_file)
     }
+}
+
+/// OPF package document for a book: EPUB reads the container zip; MOBI normalizes on the
+/// fly and serves the generated OPF (there is no physical container to open).
+fn get_package_document(book_path: &Path, media_type: Option<&str>) -> Option<String> {
+    if media_type == Some(crate::detect::APPLICATION_MOBI) {
+        let bytes = std::fs::read(book_path).ok()?;
+        let publication = crate::mobi::normalize_mobi(&bytes).ok()?;
+        let opf = publication.resource_bytes("OEBPS/content.opf").ok()??;
+        return String::from_utf8(opf).ok();
+    }
+    get_package_file_content(book_path)
 }
 
 fn book_patch_from_package(package_file: &str) -> Option<BookMetadataPatch> {
@@ -312,10 +334,13 @@ impl SeriesMetadataFromBookProvider for EpubMetadataProvider {
         media: &Media,
         _append_volume_to_title: bool,
     ) -> Option<SeriesMetadataPatch> {
-        if media.media_type.as_deref() != Some(EPUB_MEDIA_TYPE) {
+        if !matches!(
+            media.media_type.as_deref(),
+            Some(EPUB_MEDIA_TYPE) | Some(crate::detect::APPLICATION_MOBI)
+        ) {
             return None;
         }
-        let package_file = get_package_file_content(book_path)?;
+        let package_file = get_package_document(book_path, media.media_type.as_deref())?;
         let opf = Opf::parse(&package_file)?;
 
         let series = opf

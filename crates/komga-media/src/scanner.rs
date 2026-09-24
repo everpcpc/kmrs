@@ -186,6 +186,8 @@ impl Scanner {
         }
         if options.scan_epub {
             extensions.push("epub".to_string());
+            // MOBI books ride the EPUB scan flag, matching the upstream komga behavior
+            extensions.push("mobi".to_string());
         }
         tracing::info!("Scanning folder: {}", root.display());
 

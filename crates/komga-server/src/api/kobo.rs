@@ -1085,6 +1085,13 @@ async fn update_state(
 
 // region files
 
+/// Normalize a MOBI into standard EPUB bytes, the format Kobo devices actually read.
+fn mobi_normalized_epub(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let publication = komga_media::mobi::normalize_mobi(&bytes).map_err(|e| e.to_string())?;
+    publication.epub_bytes().map_err(|e| e.to_string())
+}
+
 async fn get_book_file(
     State(state): State<AppState>,
     auth: KoboAuth,
@@ -1096,6 +1103,47 @@ async fn get_book_file(
         .map(|v| v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
     if !convert_kepub {
+        // Kobo devices cannot open MOBI; deliver the normalized EPUB instead of the raw file
+        if let Some(book) = BookDao::new(state.db.clone()).find_by_id(&book_id)? {
+            restriction::check_book(&state, &auth.user, &book)?;
+            let media = MediaDao::new(state.db.clone()).find_by_id(&book.id)?;
+            if let Some(media) = media {
+                if media.media_type.as_deref() == Some(komga_media::detect::APPLICATION_MOBI) {
+                    if !auth.user.roles.contains(&UserRole::FileDownload) && !auth.user.is_admin() {
+                        return Err(ApiError::forbidden(""));
+                    }
+                    let path = std::path::PathBuf::from(url_to_file_path(&book.url));
+                    let bytes = mobi_normalized_epub(&path).map_err(|e| ApiError::Status {
+                        status: StatusCode::NOT_FOUND,
+                        message: format!("Could not read MOBI: {e}"),
+                    })?;
+                    let stem = path
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let filename = format!("{stem}.epub");
+                    let length = bytes.len();
+                    let mut response = Response::new(Body::from(bytes));
+                    {
+                        let headers = response.headers_mut();
+                        headers.insert(
+                            axum::http::header::CONTENT_DISPOSITION,
+                            HeaderValue::from_str(&content_disposition("attachment", &filename))
+                                .unwrap(),
+                        );
+                        headers.insert(
+                            axum::http::header::CONTENT_TYPE,
+                            HeaderValue::from_static("application/epub+zip"),
+                        );
+                        headers.insert(
+                            axum::http::header::CONTENT_LENGTH,
+                            HeaderValue::from_str(&length.to_string()).unwrap(),
+                        );
+                    }
+                    return Ok(response);
+                }
+            }
+        }
         return crate::api::books::download_book_file_internal(
             state,
             RequireAuth(crate::auth::Auth {
@@ -1119,13 +1167,14 @@ async fn get_book_file(
         .find_by_id(&book.id)?
         .ok_or_else(|| ApiError::Internal(format!("no media for book {book_id}")))?;
     let book_path = std::path::PathBuf::from(url_to_file_path(&book.url));
-    if media.media_type.as_deref() != Some(komga_media::detect::APPLICATION_EPUB) {
+    let is_mobi = media.media_type.as_deref() == Some(komga_media::detect::APPLICATION_MOBI);
+    if media.media_type.as_deref() != Some(komga_media::detect::APPLICATION_EPUB) && !is_mobi {
         return Err(ApiError::Internal(format!(
             "Cannot convert, not an EPUB: {}",
             book_path.display()
         )));
     }
-    if media.epub_is_kepub {
+    if !is_mobi && media.epub_is_kepub {
         return Err(ApiError::Internal(format!(
             "Cannot convert, EPUB is already a KEPUB: {}",
             book_path.display()
@@ -1151,7 +1200,26 @@ async fn get_book_file(
     let kepub_path = state
         .kepub
         .cached_or_convert(&cache_key, |tmp_dir| {
-            let converted = komga_media::kepubify::convert(&kepubify, &book_path, Some(tmp_dir))?;
+            let source: std::path::PathBuf = if is_mobi {
+                // normalize the MOBI into an in-memory EPUB and materialize it so the
+                // path-based kepubify binary can convert it
+                let bytes = match mobi_normalized_epub(&book_path) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("Could not normalize MOBI {}: {e}", book_path.display());
+                        return None;
+                    }
+                };
+                let tmp_epub = tmp_dir.join(format!("{}-source.epub", book.id));
+                if std::fs::write(&tmp_epub, bytes).is_err() {
+                    tracing::warn!("Could not write normalized MOBI to {}", tmp_epub.display());
+                    return None;
+                }
+                tmp_epub
+            } else {
+                book_path.clone()
+            };
+            let converted = komga_media::kepubify::convert(&kepubify, &source, Some(tmp_dir))?;
             // store the kepub file size, so it can be passed back during Kobo Sync
             match std::fs::metadata(&converted) {
                 Ok(meta) => {

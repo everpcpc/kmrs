@@ -112,7 +112,7 @@ async fn get_progress(
     let profile = container::media_profile(media.media_type.as_deref());
     let progress = match profile {
         Some(MediaProfile::Divina) | Some(MediaProfile::Pdf) => read_progress.page.to_string(),
-        Some(MediaProfile::Epub) => {
+        Some(MediaProfile::Mobi) | Some(MediaProfile::Epub) => {
             let extension = crate::api::books::decode_epub_extension(&media)?;
             let hrefs = position_hrefs(&extension.positions);
             let locator_href = read_progress
@@ -230,7 +230,7 @@ async fn update_progress(
             })?;
             locator_of(position, koreader_progress.percentage)
         }
-        Some(MediaProfile::Epub) => {
+        Some(MediaProfile::Mobi) | Some(MediaProfile::Epub) => {
             // KOReader indexes from 1 in the DocFragment form, from 0 in the anchor form
             let resource_index = parse_doc_fragment_index(&koreader_progress.progress)
                 .map(|i| i - 1)

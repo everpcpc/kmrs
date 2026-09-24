@@ -724,6 +724,7 @@ fn book_condition_internal(
                     ],
                     MediaProfile::Pdf => &["application/pdf"],
                     MediaProfile::Epub => &["application/epub+zip"],
+                    MediaProfile::Mobi => &["application/x-mobipocket-ebook"],
                 },
             };
             let ph = types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");

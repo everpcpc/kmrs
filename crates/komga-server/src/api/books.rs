@@ -1320,7 +1320,10 @@ async fn get_book_epub_resource(
         return Ok(response);
     }
 
-    if container::media_profile(media.media_type.as_deref()) != Some(MediaProfile::Epub) {
+    if !matches!(
+        container::media_profile(media.media_type.as_deref()),
+        Some(MediaProfile::Epub) | Some(MediaProfile::Mobi)
+    ) {
         return Err(ApiError::bad_request(format!(
             "Book media type '{}' not compatible with requested profile",
             media.media_type.as_deref().unwrap_or("null")
@@ -1461,6 +1464,7 @@ async fn get_book_webpub_manifest(
         Some(MediaProfile::Divina) => manifest_divina_internal(&state, &auth, &book_id, &parts),
         Some(MediaProfile::Pdf) => manifest_pdf_internal(&state, &auth, &book_id, &parts),
         Some(MediaProfile::Epub) => manifest_epub_internal(&state, &auth, &book_id, &parts),
+        Some(MediaProfile::Mobi) => manifest_epub_internal(&state, &auth, &book_id, &parts),
         None => Err(ApiError::not_found("Book analysis failed")),
     }
 }
@@ -1796,7 +1800,7 @@ pub(crate) fn mark_progression(
                 last_modified_date: time_codec::now_utc(),
             }
         }
-        MediaProfile::Epub => {
+        MediaProfile::Mobi | MediaProfile::Epub => {
             let href = {
                 let raw = &new.locator.href;
                 let stripped = match raw.find('#') {
