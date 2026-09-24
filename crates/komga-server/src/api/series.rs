@@ -1073,6 +1073,7 @@ mod tests {
             webui_dir: None,
             webui_auto_update: false,
             webui_update_interval: std::time::Duration::from_secs(24 * 3600),
+            sort_locale: None,
         };
         AppState {
             sessions: auth::SessionStore::new(config.session_timeout),
