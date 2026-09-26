@@ -1584,14 +1584,14 @@ mod tests {
         // IMF-fixdate format (e.g., "Wed, 21 Oct 2015 07:28:00 GMT")
         // Use 5s to give plenty of margin over the 1s backoff
         let future = OffsetDateTime::now_utc() + time::Duration::seconds(5);
-        // time's Rfc2822 format produces "+0000" but its parser expects "GMT"
+        // reformat as IMF-fixdate ("GMT" zone) to look like a real HTTP-date
         let retry_after_date = future
             .format(&time::format_description::well_known::Rfc2822)
             .unwrap()
             .replace("+0000", "GMT");
         let (url, scripted) = script_server(vec![(
             StatusCode::TOO_MANY_REQUESTS,
-            Some(retry_after_date.clone()),
+            Some(retry_after_date),
         )])
         .await;
         let state = with_webhooks(
@@ -1611,16 +1611,12 @@ mod tests {
         let elapsed = start.elapsed();
         handle.abort();
         let attempts = scripted.attempts.load(std::sync::atomic::Ordering::SeqCst);
-        eprintln!(
-            "retry_after_http_date: date={}, elapsed={:?}, attempts={}",
-            retry_after_date, elapsed, attempts
-        );
         assert_eq!(attempts, 2, "expected 2 attempts, got {}", attempts);
-        // Should wait longer than the 1s backoff (proves Retry-After was used, not just backoff).
-        // Exact elapsed varies with test scheduling; just verify it exceeded the base backoff.
+        // ~5s when honored vs ~1s on fallback to backoff: 2s separates the two cleanly,
+        // a looser threshold could pass on scheduling jitter alone.
         assert!(
-            elapsed > Duration::from_secs(1),
-            "retry-after HTTP-date not respected (elapsed={elapsed:?} <= 1s backoff)"
+            elapsed >= Duration::from_secs(2),
+            "retry-after HTTP-date not respected (elapsed={elapsed:?})"
         );
     }
 }
